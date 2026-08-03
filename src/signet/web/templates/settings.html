@@ -18,7 +18,7 @@
     <span>
       {% if google_connected %}Connected. schedule creates real events.
       {% elif google_ready %}Credentials saved. Grant access to finish.
-      {% else %}Add a client ID and secret below, then come back.{% endif %}
+      {% else %}Not ready: {{ google_missing }} missing. Fill it in below and save.{% endif %}
     </span>
     {% if google_connected %}
       <form method="post" action="/app/google/disconnect"><button class="quiet tiny">Disconnect</button></form>

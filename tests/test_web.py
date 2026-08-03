@@ -479,6 +479,7 @@ async def test_redirect_uri_is_https_behind_the_tunnel(client: httpx.AsyncClient
     hostname, so this must not follow the request scheme blindly."""
     conn = db.connect(cfg.db_path)
     db.set_config(conn, "google_client_id", "cid")
+    db.set_config(conn, "google_client_secret", "sec")
     conn.close()
 
     await sign_in(client)
@@ -492,6 +493,7 @@ async def test_redirect_uri_is_https_behind_the_tunnel(client: httpx.AsyncClient
 async def test_redirect_uri_upgrades_a_plain_http_request(client: httpx.AsyncClient, cfg):
     conn = db.connect(cfg.db_path)
     db.set_config(conn, "google_client_id", "cid")
+    db.set_config(conn, "google_client_secret", "sec")
     conn.close()
 
     await sign_in(client)
@@ -502,6 +504,7 @@ async def test_redirect_uri_upgrades_a_plain_http_request(client: httpx.AsyncCli
 async def test_configured_public_url_wins(client: httpx.AsyncClient, cfg):
     conn = db.connect(cfg.db_path)
     db.set_config(conn, "google_client_id", "cid")
+    db.set_config(conn, "google_client_secret", "sec")
     db.set_config(conn, "public_url", "https://ring.example.org/")
     conn.close()
 
@@ -528,3 +531,31 @@ async def test_callback_path_matches_the_registered_route(cfg):
     paths = {getattr(r, "path", None) for r in portal.routes}
     assert CALLBACK_PATH == "/app" + "/google/callback"
     assert "/google/callback" in paths
+
+
+async def test_connect_needs_both_id_and_secret(client: httpx.AsyncClient, cfg):
+    """With only the client ID set, Connect appeared and the flow died at the token exchange
+    with "client_secret is missing", after the user had already granted access."""
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "google_client_id", "cid")
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+    assert "client secret missing" in body
+    assert 'action="/app/google/connect"' not in body
+
+    # And blocked server side too, in case the page was stale.
+    response = await client.post("/google/connect")
+    assert response.headers["location"] == "/app/settings"
+    assert "client secret" in (await client.get("/settings")).text
+
+
+async def test_connect_offered_once_both_are_set(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "google_client_id", "cid")
+    db.set_config(conn, "google_client_secret", "secret")
+    conn.close()
+
+    await sign_in(client)
+    assert 'action="/app/google/connect"' in (await client.get("/settings")).text

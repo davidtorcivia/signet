@@ -480,7 +480,19 @@ async def settings_page(request: Request) -> Response:
     errors = request.session.pop("settings_errors", [])
     conn = _conn(request)
     try:
-        google_ready = bool(db.get_config(conn, "google_client_id"))
+        # Both, not either. With only the client ID set the Connect button appeared, sent the
+        # user through Google's consent screen, and then died at the token exchange with
+        # "client_secret is missing" — after they had already granted access.
+        has_id = bool(db.get_config(conn, "google_client_id"))
+        has_secret = bool(db.get_config(conn, "google_client_secret"))
+        google_ready = has_id and has_secret
+        google_missing = (
+            "client ID and secret"
+            if not has_id and not has_secret
+            else "client secret"
+            if not has_secret
+            else "client ID"
+        )
         google_connected = google.connected(conn)
 
         current_model = db.get_config(conn, "model") or cfg.model
@@ -503,6 +515,7 @@ async def settings_page(request: Request) -> Response:
         saved=saved,
         errors=errors,
         google_ready=google_ready,
+        google_missing=google_missing,
         google_connected=google_connected,
         redirect_uri=_redirect_uri(request),
         models=models,
@@ -618,10 +631,15 @@ async def google_connect(request: Request) -> Response:
     conn = _conn(request)
     try:
         client_id = db.get_config(conn, "google_client_id")
+        client_secret = db.get_config(conn, "google_client_secret")
     finally:
         conn.close()
-    if not client_id:
-        request.session["settings_errors"] = ["Set a Google client ID first."]
+    # Checked here as well as in the template, so a stale page cannot start a doomed flow.
+    if not client_id or not client_secret:
+        missing = "client ID" if not client_id else "client secret"
+        request.session["settings_errors"] = [
+            f"Google {missing} is not set. Fill both in below and save before connecting."
+        ]
         return RedirectResponse("/app/settings", status_code=303)
 
     # CSRF: the state is generated here, kept in the session, and compared on return.

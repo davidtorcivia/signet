@@ -88,7 +88,17 @@ async def exchange_code(
             },
         )
     if response.status_code != 200:
-        raise GoogleUnavailable(f"token exchange failed: {response.text[:200]}")
+        detail = response.text[:200]
+        if "client_secret" in detail:
+            raise GoogleUnavailable(
+                "Google rejected the client secret. Check it is saved in settings, and that "
+                "the OAuth client is of type Web application."
+            )
+        if "redirect_uri_mismatch" in detail:
+            raise GoogleUnavailable(
+                "Google rejected the redirect URI. It must match the one shown above exactly."
+            )
+        raise GoogleUnavailable(f"Google refused the sign-in: {detail}")
 
     payload = response.json()
     refresh = payload.get("refresh_token")
