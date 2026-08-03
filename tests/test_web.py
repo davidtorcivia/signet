@@ -8,6 +8,7 @@ not a convenience.
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from pathlib import Path
 
@@ -97,7 +98,7 @@ async def test_dashboard_shows_counts(client: httpx.AsyncClient, cfg: config.Con
 
     await sign_in(client)
     body = (await client.get("/")).text
-    assert "captured today" in body
+    assert "Captured today" in body
     assert "0.0004" in body
     assert "ask" in body
 
@@ -306,7 +307,7 @@ async def test_model_picker_lists_models_and_marks_the_current_one(
     assert "DeepSeek: V4 Flash" in body
     assert "Someone: Chatty" in body
     # Structured-output models are grouped first, because routing and scheduling need them.
-    assert body.index("Supports structured output") < body.index("Answers only")
+    assert body.index("Structured output") < body.index("Answers only")
     assert "$0.09/$0.18 per M" in body
 
 
@@ -369,3 +370,40 @@ async def test_settings_page_survives_an_empty_catalogue(client: httpx.AsyncClie
     response = await client.get("/settings")
     assert response.status_code == 200
     assert 'id="model"' in response.text
+
+
+async def test_dashboard_chart_always_spans_fourteen_days(client: httpx.AsyncClient, cfg):
+    """Quiet days must render as zero bars. Skipping them would silently redraw the window
+    as something narrower than it claims."""
+    conn = db.connect(cfg.db_path)
+    db.add_journal(conn, "one note today")
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/")).text
+    assert body.count('class="col"') == 14
+    assert 'class="bar zero"' in body
+
+
+async def test_pages_share_the_same_furniture(client: httpx.AsyncClient, catalogue):
+    """Every page gets the masthead, both navs, and the pause control."""
+    await sign_in(client)
+    for path in ("/", "/feed", "/journal", "/tokens", "/settings"):
+        body = (await client.get(path)).text
+        assert 'class="mark"' in body, path
+        assert 'class="wordmark"' in body, path
+        assert 'action="/app/kill"' in body, path
+        assert 'name="viewport"' in body, path
+
+
+def test_p95_is_never_below_p50():
+    """A verb with two calls reported a p95 lower than its p50, because truncating the index
+    returns the minimum for small samples."""
+    from signet.web.app import _percentile
+
+    assert _percentile([1467, 1817], 0.95) == 1817
+    assert _percentile([55], 0.95) == 55
+    assert _percentile([], 0.95) == 0
+    assert _percentile(list(range(1, 101)), 0.95) == 95
+    for sample in ([5, 9], [1, 2, 3], [7] * 4, [10, 200, 30]):
+        assert _percentile(sample, 0.95) >= statistics.median(sample)

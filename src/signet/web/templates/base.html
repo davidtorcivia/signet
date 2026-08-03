@@ -6,120 +6,216 @@
 <meta name="color-scheme" content="light dark">
 <title>{% block title %}signet{% endblock %}</title>
 <style>
-/* Mobile first. The realistic use is standing somewhere holding a phone, having just
-   pressed the ring, wanting to know what signet did with it. Desktop is the enhancement. */
+/* Swiss, not soft. Hairline rules, square corners, one accent, monospace for anything
+   machine-generated. A signet is a wax seal, so the accent is sealing wax.
+
+   Mobile first throughout: the realistic use is a phone, moments after pressing the ring. */
 :root {
-  --bg: #fbfaf8;
+  --paper: #ffffff;
   --panel: #ffffff;
-  --ink: #1b1a19;
-  --muted: #6b6864;
-  --line: #e5e1db;
-  --accent: #7c4a2d;
-  --ok: #2f6b45;
-  --bad: #9b2c25;
-  --radius: 10px;
+  --sunk: #fafafa;
+  --ink: #111111;
+  --muted: #6e6e6e;
+  --line: #e2e2e2;
+  --rule: #111111;
+  --accent: #c1272d;
+  --accent-ink: #ffffff;
+  --ok: #1f6f43;
+  --bad: #b3261e;
+  --track: #ededed;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #16151a;
-    --panel: #1f1e24;
-    --ink: #eceaea;
-    --muted: #9a9691;
-    --line: #322f38;
-    --accent: #d59a72;
-    --ok: #7fbf95;
-    --bad: #e78078;
+    --paper: #0e0e10;
+    --panel: #141416;
+    --sunk: #101012;
+    --ink: #ededed;
+    --muted: #8d8d90;
+    --line: #2a2a2e;
+    --rule: #ededed;
+    --accent: #e2564f;
+    --accent-ink: #12080a;
+    --ok: #6bbb8c;
+    --bad: #e2726a;
+    --track: #232327;
   }
 }
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--paper);
   color: var(--ink);
-  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  padding-bottom: 5rem;
-  -webkit-text-size-adjust: 100%;
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  padding-bottom: 4.75rem;
 }
-header {
-  position: sticky; top: 0; z-index: 10;
-  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
-  padding: .85rem 1rem; background: var(--panel); border-bottom: 1px solid var(--line);
+.mono, .meta, code, pre, .num {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
-header h1 { font-size: 1.05rem; margin: 0; letter-spacing: .02em; }
-header h1 a { color: inherit; text-decoration: none; }
-main { padding: 1rem; max-width: 60rem; margin: 0 auto; }
 
-/* Bottom bar: thumb-reachable on a phone, ordinary nav on a wide screen. */
+/* --- masthead --------------------------------------------------------------- */
+header.top {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .9rem 1rem; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20; background: var(--paper);
+}
+.mark { width: .8rem; height: .8rem; background: var(--accent); flex: none; }
+.wordmark {
+  font-size: .92rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase;
+  color: inherit; text-decoration: none; margin-right: auto;
+}
+header.top nav { display: none; }
+header.top nav a {
+  font-size: .72rem; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); text-decoration: none; padding: .35rem .1rem;
+}
+header.top nav a.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* --- thumb-reach nav on phones ---------------------------------------------- */
 nav.tabs {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
-  display: flex; background: var(--panel); border-top: 1px solid var(--line);
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20; display: flex;
+  background: var(--paper); border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
 }
 nav.tabs a {
-  flex: 1; text-align: center; padding: .8rem .25rem; font-size: .8rem;
-  color: var(--muted); text-decoration: none; min-height: 44px;
+  flex: 1; text-align: center; padding: .8rem .2rem; min-height: 46px;
+  font-size: .62rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); text-decoration: none;
 }
-nav.tabs a.on { color: var(--accent); font-weight: 600; box-shadow: inset 0 2px 0 var(--accent); }
-@media (min-width: 48rem) {
-  nav.tabs { position: static; border-top: 0; border-bottom: 1px solid var(--line); }
+nav.tabs a.on { color: var(--ink); box-shadow: inset 0 2px 0 var(--accent); }
+
+/* Must come after the base rules above: same specificity, so source order decides.
+   With this block earlier, the bottom bar reappeared on desktop. */
+@media (min-width: 46rem) {
+  header.top nav { display: flex; gap: 1.4rem; }
+  nav.tabs { display: none; }
   body { padding-bottom: 1rem; }
 }
 
-.card {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: .9rem; margin-bottom: .75rem;
+main { padding: 1.1rem 1rem 2rem; max-width: 68rem; margin: 0 auto; }
+
+/* --- page furniture --------------------------------------------------------- */
+.pagehead {
+  display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  margin: .25rem 0 1.1rem;
 }
-.row { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+h1.title {
+  margin: 0; font-size: 1.55rem; font-weight: 800;
+  letter-spacing: .04em; text-transform: uppercase;
+}
+h2.section {
+  margin: 1.6rem 0 .6rem; font-size: .7rem; font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.label {
+  font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.panel { border: 1px solid var(--line); background: var(--panel); padding: .95rem 1rem; }
+.panel + .panel { margin-top: -1px; }
 .muted { color: var(--muted); font-size: .82rem; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
+.spacer { flex: 1 1 auto; }
+
+/* --- stat strip ------------------------------------------------------------- */
+.stats { display: grid; grid-template-columns: repeat(2, 1fr); border: 1px solid var(--line); }
+@media (min-width: 46rem) { .stats { grid-template-columns: repeat(4, 1fr); } }
+.stat { padding: 1rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.stats .stat:nth-child(2n) { border-right: 0; }
+.stats .stat:nth-last-child(-n+2) { border-bottom: 0; }
+@media (min-width: 46rem) {
+  .stats .stat:nth-child(2n) { border-right: 1px solid var(--line); }
+  .stats .stat { border-bottom: 0; }
+  .stats .stat:last-child { border-right: 0; }
+}
+.stat b {
+  display: block; font-size: 1.9rem; font-weight: 800; line-height: 1.05; letter-spacing: -.02em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.stat span { display: block; margin-top: .35rem; font-size: .62rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* --- bar chart -------------------------------------------------------------- */
+.chart { display: flex; align-items: flex-end; gap: 2px; height: 96px; margin-top: .8rem; }
+.chart .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; }
+.chart .bar { background: var(--accent); min-height: 1px; }
+.chart .bar.zero { background: var(--track); }
+.chart-axis {
+  display: flex; justify-content: space-between; margin-top: .4rem;
+  font-size: .62rem; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* --- rows ------------------------------------------------------------------- */
+.row { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.between { justify-content: space-between; }
+.item { padding: .8rem 0; border-bottom: 1px dotted var(--line); }
+.item:last-child { border-bottom: 0; }
+.item .said { margin: .3rem 0 0; }
 .tag {
-  display: inline-block; padding: .1rem .45rem; border-radius: 99px;
-  font-size: .72rem; border: 1px solid var(--line); color: var(--muted);
+  display: inline-block; padding: .1rem .4rem; font-size: .6rem; letter-spacing: .12em;
+  text-transform: uppercase; border: 1px solid var(--line); color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-.tag.ok { color: var(--ok); border-color: var(--ok); }
+.tag.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .tag.bad { color: var(--bad); border-color: var(--bad); }
+/* Thin, so a full-width bar reads as data rather than a rule across the page. */
+.meter { height: 3px; background: var(--track); margin-top: .45rem; }
+.meter > i { display: block; height: 100%; background: var(--accent); }
 
-/* Stats wrap instead of scrolling sideways. Nothing horizontal on a phone. */
-.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
-@media (min-width: 40rem) { .stats { grid-template-columns: repeat(4, 1fr); } }
-.stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: .75rem; }
-.stat b { display: block; font-size: 1.5rem; font-weight: 650; line-height: 1.2; }
-.stat span { color: var(--muted); font-size: .75rem; }
-
-input, button, select {
-  font: inherit; padding: .6rem .7rem; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
-  min-height: 44px; /* touch target */
+/* --- controls --------------------------------------------------------------- */
+input, button, select, textarea {
+  font: inherit; color: var(--ink); background: var(--paper);
+  border: 1px solid var(--line); border-radius: 0; padding: .6rem .7rem; min-height: 44px;
 }
-input[type=text], input[type=password], input[type=search] { width: 100%; }
-button { background: var(--accent); color: #fff; border: 0; font-weight: 600; }
-button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); }
-button.danger { background: var(--bad); }
+textarea { min-height: 5.5rem; line-height: 1.45; }
+input[type=text], input[type=password], input[type=search], select, textarea { width: 100%; }
+input:focus, select:focus, textarea:focus, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -2px;
+}
+button {
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+  font-size: .72rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  cursor: pointer; padding: .65rem 1rem;
+}
+button.quiet { background: transparent; color: var(--muted); border-color: var(--line); }
+button.tiny { min-height: 34px; padding: .2rem .5rem; letter-spacing: .06em; }
+button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 form.inline { display: flex; gap: .5rem; flex-wrap: wrap; }
-form.inline > input { flex: 1 1 12rem; }
+form.inline > input, form.inline > select { flex: 1 1 12rem; }
+label.check { display: flex; align-items: center; gap: .55rem; min-height: 44px; }
+label.check input { width: 1.1rem; height: 1.1rem; min-height: auto; flex: none; }
 
 pre {
-  white-space: pre-wrap; word-break: break-word;
-  background: var(--bg); border: 1px solid var(--line);
-  border-radius: 8px; padding: .6rem; margin: .5rem 0 0; overflow-x: auto;
+  white-space: pre-wrap; word-break: break-word; background: var(--sunk);
+  border: 1px solid var(--line); padding: .6rem .7rem; margin: .55rem 0 0; font-size: .8rem;
 }
 a { color: var(--accent); }
-.empty { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
-.banner {
-  border: 1px solid var(--bad); color: var(--bad);
-  border-radius: var(--radius); padding: .7rem .9rem; margin-bottom: .75rem;
-}
+.empty { padding: 3rem 1rem; text-align: center; color: var(--muted); }
+.notice { border: 1px solid var(--rule); padding: .8rem 1rem; margin-bottom: 1rem; }
+.notice.bad { border-color: var(--bad); color: var(--bad); }
+.notice.accent { border-left: 3px solid var(--accent); }
 </style>
 <script src="/app/static/htmx.min.js" defer></script>
 </head>
 <body>
-<header>
-  <h1><a href="/app/">signet</a></h1>
-  {% if kill_switch %}
-    <form method="post" action="/app/kill"><button class="danger">Paused. Resume</button></form>
-  {% else %}
-    <form method="post" action="/app/kill"><button class="quiet">Pause</button></form>
-  {% endif %}
+
+<header class="top">
+  <span class="mark"></span>
+  <a class="wordmark" href="/app/">signet</a>
+  <nav>
+    <a href="/app/" class="{{ 'on' if page == 'dashboard' }}">Overview</a>
+    <a href="/app/feed" class="{{ 'on' if page == 'feed' }}">Feed</a>
+    <a href="/app/journal" class="{{ 'on' if page == 'journal' }}">Journal</a>
+    <a href="/app/tokens" class="{{ 'on' if page == 'tokens' }}">Tokens</a>
+    <a href="/app/settings" class="{{ 'on' if page == 'settings' }}">Settings</a>
+  </nav>
+  <form method="post" action="/app/kill">
+    <button class="{{ 'danger' if kill_switch else 'quiet' }} tiny">
+      {{ 'Paused' if kill_switch else 'Pause' }}
+    </button>
+  </form>
 </header>
 
 <nav class="tabs">
@@ -132,7 +228,7 @@ a { color: var(--accent); }
 
 <main>
   {% if kill_switch %}
-    <div class="banner">Paused. Only capture is working, so nothing you say is lost.</div>
+    <div class="notice bad">Paused. Only capture is running, so nothing you say is lost.</div>
   {% endif %}
   {% block content %}{% endblock %}
 </main>

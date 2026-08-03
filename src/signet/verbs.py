@@ -96,6 +96,15 @@ TOOLS = [
 
 ARG_NAMES = {"capture": "text", "ask": "question", "schedule": "request", "do": "request"}
 
+# Appended in code rather than kept in the editable prompt, so editing the voice and tone
+# cannot accidentally disable the mechanism that decides whether to spend money on a search.
+NEEDS_WEB = "NEED_SEARCH"
+ESCAPE_HATCH = (
+    f"If the notes above do not contain the answer and you do not reliably know it, reply "
+    f"with exactly {NEEDS_WEB} and nothing else. Do not guess at current events, prices, "
+    f"schedules, or anything that changes over time."
+)
+
 # What the model must return to turn speech into an event. Strict, so a vague answer fails
 # loudly here rather than producing an event at the wrong time.
 EVENT_SCHEMA = {
@@ -206,31 +215,23 @@ class Verbs:
         context = "\n".join(f"- {n['created_at']}: {n['text']}" for n in notes) or "(none)"
         recent = db.recent_journal(conn, days=14, limit=100)
         recent_text = "\n".join(f"- {r['created_at']}: {r['text']}" for r in recent) or "(none)"
+        local = (
+            f"Notes matching the question:\n{context}\n\n"
+            f"The user's recent notes:\n{recent_text}\n\n"
+            f"Question: {request.text}"
+        )
+        answer_prompt = prompts.get(conn, "prompt_answer")
 
-        # The journal answers questions about the user's own life. Anything else needs the
-        # web, so search it when the journal turned up nothing.
-        web_block = ""
-        web_cost = 0.0
-        sources: list[dict] = []
-        if not notes and self._web_available(conn):
-            found_web = await self._run(
-                conn, request, "search.web", {"query": request.text, "results": 5}
-            )
-            if not found_web.is_error:
-                # Already fenced by the capability, and it stays fenced from here on.
-                web_block = f"\n\n{found_web.output}"
-                web_cost = found_web.cost_usd
-                sources = (found_web.data or {}).get("results", [])
-
+        # Try to answer from the journal first, and let the model say when it cannot.
+        #
+        # The economics drive this. Answering costs about $0.00004; a web search costs about
+        # $0.007, roughly 175 times more. So an extra model call to find out whether a search
+        # is needed pays for itself many times over, and questions about the user's own life
+        # never touch the network.
         try:
             completion = await llm.complete(
-                system=prompts.get(conn, "prompt_answer"),
-                user=(
-                    f"Notes matching the question:\n{context}\n\n"
-                    f"The user's recent notes:\n{recent_text}"
-                    f"{web_block}\n\n"
-                    f"Question: {request.text}"
-                ),
+                system=f"{answer_prompt}\n\n{ESCAPE_HATCH}",
+                user=local,
                 max_tokens=300,
                 timeout=40.0,
             )
@@ -242,15 +243,45 @@ class Verbs:
                 data=notes,
             )
 
-        answer = completion.text or "I do not know."
+        cost = completion.cost_usd
+        tokens_in, tokens_out = completion.tokens_in, completion.tokens_out
+        sources: list[dict] = []
+        answer = completion.text.strip()
+
+        if answer.startswith(NEEDS_WEB) and self._web_available(conn):
+            logger.info("journal could not answer, searching the web")
+            found_web = await self._run(
+                conn, request, "search.web", {"query": request.text, "results": 5}
+            )
+            if not found_web.is_error:
+                cost += found_web.cost_usd
+                sources = (found_web.data or {}).get("results", [])
+                try:
+                    completion = await llm.complete(
+                        system=answer_prompt,
+                        # Already fenced by the capability, and it stays fenced from here on.
+                        user=f"{local}\n\n{found_web.output}",
+                        max_tokens=300,
+                        timeout=40.0,
+                    )
+                    answer = completion.text.strip()
+                    cost += completion.cost_usd
+                    tokens_in += completion.tokens_in
+                    tokens_out += completion.tokens_out
+                except LLMUnavailable:
+                    answer = "I could not answer that."
+        elif answer.startswith(NEEDS_WEB):
+            # No search configured, so say so rather than leaking the marker to the watch.
+            answer = "I don't know, and web search isn't set up."
+
         return Outcome(
-            output=answer,
-            semantic=coreschema.response(answer),
+            output=answer or "I do not know.",
+            semantic=coreschema.response(answer or "I do not know."),
             data={"notes": notes, "sources": sources},
-            cost_usd=completion.cost_usd + web_cost,
+            cost_usd=cost,
             model=completion.model,
-            tokens_in=completion.tokens_in,
-            tokens_out=completion.tokens_out,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
         )
 
     async def schedule(self, conn: sqlite3.Connection, request: Request) -> Outcome:

@@ -1,13 +1,14 @@
-<div class="card">
-  <label for="model"><b>Model</b></label>
-  <div class="muted" style="margin:.2rem 0 .5rem">
+<h2 class="section">Model</h2>
+<div class="panel">
+  <label for="model" class="label">OpenRouter model</label>
+  <div class="muted" style="margin:.25rem 0 .55rem">
     Prices are per million tokens, input then output.
     {% if not models %}Could not reach OpenRouter, so this is a plain text box.{% endif %}
   </div>
 
   {% if models %}
-    <select id="model" name="model" style="width:100%">
-      <optgroup label="Supports structured output (needed for routing and scheduling)">
+    <select id="model" name="model">
+      <optgroup label="Structured output (needed for routing and scheduling)">
         {% for m in models if m.structured %}
           <option value="{{ m.id }}" {{ 'selected' if m.id == current_model }}>{{ m.label }}</option>
         {% endfor %}
@@ -27,49 +28,40 @@
     <input type="text" id="model" name="model" value="{{ current_model }}">
   {% endif %}
 
-  <div class="muted" style="margin-top:.5rem">
-    {{ models|length }} models, cached {{ cached_ago }}.
-    <button class="quiet" name="refresh" value="models" style="margin-left:.4rem">Refresh list</button>
+  <div class="row" style="margin-top:.5rem">
+    <span class="label">{{ models|length }} models &middot; cached {{ cached_ago }}</span>
+    <button class="quiet tiny" name="refresh" value="models">Refresh</button>
   </div>
 </div>
 
-<div class="card">
-  <b>Provider routing</b>
-  <div class="muted" style="margin:.2rem 0 .6rem">
-    Which providers may serve this model, in order of preference. Leave everything unticked to
-    let OpenRouter choose.
+<h2 class="section">Provider routing</h2>
+<div class="panel">
+  <div class="muted" style="margin-bottom:.6rem">
+    Which providers may serve this model, in order. Tick none to let OpenRouter choose.
   </div>
 
   {% if providers %}
     <ul id="provider-list" style="list-style:none;padding:0;margin:0">
       {% for p in providers %}
-        <li data-provider="{{ p }}"
-            style="display:flex;align-items:center;gap:.5rem;padding:.45rem 0;border-bottom:1px solid var(--line)">
-          <input type="checkbox" name="provider_order" value="{{ p }}"
-                 id="prov-{{ loop.index }}" style="min-height:auto;width:1.15rem;height:1.15rem"
+        <li data-provider="{{ p }}" class="item"
+            style="display:flex;align-items:center;gap:.6rem;padding:.5rem 0">
+          <input type="checkbox" name="provider_order" value="{{ p }}" id="prov-{{ loop.index }}"
+                 style="width:1.1rem;height:1.1rem;min-height:auto;flex:none"
                  {{ 'checked' if p in selected_providers }}>
           <label for="prov-{{ loop.index }}" style="flex:1">{{ p }}</label>
-          <button type="button" class="quiet move" data-dir="up"
-                  style="min-height:36px;padding:.2rem .55rem">&uarr;</button>
-          <button type="button" class="quiet move" data-dir="down"
-                  style="min-height:36px;padding:.2rem .55rem">&darr;</button>
+          <button type="button" class="quiet tiny move" data-dir="up" aria-label="Move up">&uarr;</button>
+          <button type="button" class="quiet tiny move" data-dir="down" aria-label="Move down">&darr;</button>
         </li>
       {% endfor %}
     </ul>
 
-    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.7rem">
-      <input type="checkbox" name="allow_fallbacks" value="1"
-             style="min-height:auto;width:1.15rem;height:1.15rem"
-             {{ 'checked' if allow_fallbacks }}>
-      <span>Allow other providers if the ones above fail</span>
+    <label class="check" style="margin-top:.5rem">
+      <input type="checkbox" name="allow_fallbacks" value="1" {{ 'checked' if allow_fallbacks }}>
+      <span>Allow other providers if these fail</span>
     </label>
-    <div class="muted" style="margin-top:.35rem">
-      Unticked means only the ticked providers are used, and the call fails if none are up.
-    </div>
+    <div class="muted">Unticked means only the ticked providers are used.</div>
   {% else %}
-    <div class="muted">
-      No provider list for this model yet. Save the model first, then reopen this page.
-    </div>
+    <div class="muted">No provider list yet. Save the model first, then reopen this page.</div>
   {% endif %}
 </div>
 

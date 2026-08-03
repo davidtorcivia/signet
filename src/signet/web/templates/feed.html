@@ -1,7 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Feed{% endblock %}
 {% block content %}
-<div hx-get="/app/feed/rows" hx-trigger="load, every 10s" hx-swap="innerHTML">
+<div class="pagehead">
+  <h1 class="title">Feed</h1>
+  <span class="spacer"></span>
+  <span class="label">Live</span>
+</div>
+<div class="panel" hx-get="/app/feed/rows" hx-trigger="load, every 10s" hx-swap="innerHTML">
   {% include "_rows.html" %}
 </div>
 {% endblock %}

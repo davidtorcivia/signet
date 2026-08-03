@@ -16,9 +16,11 @@ cannot.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import statistics
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,20 @@ def _ago(timestamp: str) -> str:
     if seconds < 86400:
         return f"{int(seconds // 3600)} h ago"
     return f"{int(seconds // 86400)} d ago"
+
+
+def _percentile(values: list[int], fraction: float) -> int:
+    """Nearest-rank percentile.
+
+    Truncating `len * fraction` returns the *minimum* for small samples, which showed up as a
+    p95 lower than the p50 on a verb with two calls. With ceil, a single sample is its own p95
+    and n=2 gives the slower of the two, which is what the number is supposed to mean.
+    """
+    if not values:
+        return 0
+    ranked = sorted(values)
+    index = math.ceil(fraction * len(ranked)) - 1
+    return int(ranked[max(0, min(index, len(ranked) - 1))])
 
 
 def _authed(request: Request) -> bool:
@@ -128,6 +144,41 @@ async def dashboard(request: Request) -> Response:
         ):
             by_verb.setdefault(row["verb"], []).append(row["latency_ms"])
 
+        # Captures per day for the chart. Filled from a dict so quiet days are zero bars
+        # rather than gaps, which would misread as a narrower window.
+        counted = {
+            row["day"]: row["c"]
+            for row in conn.execute(
+                "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS c FROM journal "
+                "WHERE created_at >= datetime('now', '-14 days') GROUP BY day"
+            )
+        }
+        today = datetime.now(UTC).date()
+        days = [today - timedelta(days=offset) for offset in range(13, -1, -1)]
+        busiest = max([counted.get(d.isoformat(), 0) for d in days] or [0])
+        activity = [
+            {
+                "date": d.strftime("%d %b"),
+                "count": counted.get(d.isoformat(), 0),
+                "pct": int(counted.get(d.isoformat(), 0) / busiest * 100) if busiest else 0,
+            }
+            for d in days
+        ]
+
+        latency = [
+            {
+                "verb": verb,
+                "n": len(values),
+                "p50": int(statistics.median(values)),
+                "p95": _percentile(values, 0.95),
+            }
+            for verb, values in sorted(by_verb.items())
+        ]
+        slowest = max([row["p95"] for row in latency] or [0])
+        for row in latency:
+            # Relative bar, so the slowest verb is obvious without needing an axis.
+            row["pct"] = int(row["p95"] / slowest * 100) if slowest else 0
+
         stats = {
             "captures_today": captures_today,
             "requests_today": requests_today,
@@ -136,15 +187,9 @@ async def dashboard(request: Request) -> Response:
             "cap": cfg.daily_cost_cap_usd,
             "journal_total": journal_total,
             "journal_week": journal_week,
-            "latency": [
-                {
-                    "verb": verb,
-                    "n": len(values),
-                    "p50": int(statistics.median(values)),
-                    "p95": int(sorted(values)[max(0, int(len(values) * 0.95) - 1)]),
-                }
-                for verb, values in sorted(by_verb.items())
-            ],
+            "activity": activity,
+            "busiest": busiest,
+            "latency": latency,
         }
         tokens = list(conn.execute("SELECT * FROM tokens ORDER BY created_at"))
     finally:

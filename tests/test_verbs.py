@@ -241,3 +241,74 @@ async def test_portal_cost_cap_overrides_the_environment(cfg, conn):
 
     db.set_config(conn, "daily_cost_cap_usd", "10.00")
     assert verbs._budget_left(conn) is True
+
+
+class ScriptedLLM(LLM):
+    """Answers a list of canned replies in order, so a two-step ask can be exercised."""
+
+    def __init__(self, *replies: str):
+        super().__init__(api_key="test-key")
+        self.replies = list(replies)
+        self.calls = 0
+
+    async def complete(self, system, user, *, schema=None, max_tokens=600, timeout=None):
+        self.calls += 1
+        text = self.replies.pop(0) if self.replies else ""
+        return Completion(
+            text=text, data=None, model="fake", tokens_in=100, tokens_out=20, cost_usd=0.00004
+        )
+
+
+async def test_journal_answer_never_searches_the_web(cfg, conn):
+    """A search costs about 175 times what an answer costs, so questions the journal can
+    answer must not touch the network."""
+    db.set_config(conn, "exa_api_key", "would-work-if-called")
+    llm = ScriptedLLM("The bulb blew on Tuesday.")
+    verbs = build(cfg, llm)
+    await verbs.call(conn, "capture", ring_request("the enlarger bulb blew on Tuesday"))
+
+    outcome = await verbs.call(conn, "ask", ring_request("what happened to the enlarger"))
+
+    assert outcome.semantic["text"] == "The bulb blew on Tuesday."
+    assert llm.calls == 1, "answering from the journal should take one call and no search"
+    assert outcome.data["sources"] == []
+
+
+async def test_web_search_only_after_the_model_asks_for_it(cfg, conn, monkeypatch):
+    import httpx
+
+    from signet.capabilities import web as web_cap
+    from signet.search import Exa
+
+    payload = {
+        "results": [{"title": "T", "url": "https://x", "text": "The answer is 42."}],
+        "costDollars": {"total": 0.007},
+    }
+    monkeypatch.setattr(
+        web_cap,
+        "Exa",
+        lambda key: Exa(
+            key, transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload))
+        ),
+    )
+    db.set_config(conn, "exa_api_key", "key")
+
+    llm = ScriptedLLM("NEED_SEARCH", "It is 42.")
+    verbs = build(cfg, llm)
+    outcome = await verbs.call(conn, "ask", ring_request("what is the answer to everything"))
+
+    assert llm.calls == 2
+    assert outcome.semantic["text"] == "It is 42."
+    assert outcome.data["sources"]
+    # Both model calls plus the search are billed to the request.
+    assert outcome.cost_usd == pytest.approx(0.00004 * 2 + 0.007)
+
+
+async def test_marker_never_leaks_to_the_watch(cfg, conn):
+    """With no search configured the escape hatch must turn into plain words, not leak
+    NEED_SEARCH onto the user's wrist."""
+    verbs = build(cfg, ScriptedLLM("NEED_SEARCH"))
+    outcome = await verbs.call(conn, "ask", ring_request("what is the price of gold"))
+
+    assert "NEED_SEARCH" not in outcome.semantic["text"]
+    assert "don't know" in outcome.semantic["text"]

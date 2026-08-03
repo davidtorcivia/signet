@@ -1,18 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Journal{% endblock %}
 {% block content %}
+<div class="pagehead">
+  <h1 class="title">Journal</h1>
+  <span class="spacer"></span>
+  <span class="label">{{ entries|length }} shown</span>
+</div>
+
 <form class="inline" method="get" action="/app/journal" style="margin-bottom:1rem">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search your notes" autocomplete="off">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search everything you have said" autocomplete="off">
   <button>Search</button>
 </form>
 
-{% if not entries %}
-  <div class="empty">{{ 'Nothing matches.' if q else 'No notes yet.' }}</div>
-{% endif %}
-{% for e in entries %}
-  <div class="card">
-    <div class="muted">{{ e.created_at }} &middot; {{ e.kind }}</div>
-    <p style="margin:.35rem 0 0">{{ e.text }}</p>
-  </div>
-{% endfor %}
+<div class="panel">
+  {% if not entries %}
+    <div class="empty">{{ 'Nothing matches.' if q else 'No notes yet.' }}</div>
+  {% endif %}
+  {% for e in entries %}
+    <div class="item">
+      <div class="row between">
+        <span class="label">{{ e.kind }}</span>
+        <span class="muted mono" style="font-size:.72rem">{{ e.created_at }}</span>
+      </div>
+      <p class="said">{{ e.text }}</p>
+    </div>
+  {% endfor %}
+</div>
 {% endblock %}

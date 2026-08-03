@@ -1,12 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Tokens{% endblock %}
 {% block content %}
+<div class="pagehead"><h1 class="title">Tokens</h1></div>
 
 {% if new_token %}
-  <div class="card">
-    <b>Copy this now. It is not shown again.</b>
-    <pre class="mono">Bearer {{ new_token }}</pre>
-    <p class="muted">Paste the whole line, including the word Bearer, into the Pebble app.</p>
+  <div class="notice accent">
+    <b>Copy this now. It is never shown again.</b>
+    <pre>Bearer {{ new_token }}</pre>
+    <p class="muted" style="margin:.5rem 0 0">
+      Paste the whole line, including the word Bearer, into the Pebble app.
+    </p>
   </div>
 {% endif %}
 
@@ -15,19 +18,26 @@
   <button>Create</button>
 </form>
 
-{% for t in tokens %}
-  <div class="card">
-    <div class="row" style="justify-content: space-between">
-      <b>{{ t.name }}</b>
-      {% if t.revoked_at %}<span class="tag bad">revoked</span>{% endif %}
+<div class="panel">
+  {% for t in tokens %}
+    <div class="item">
+      <div class="row between">
+        <b>{{ t.name }}</b>
+        {% if t.revoked_at %}
+          <span class="tag bad">revoked</span>
+        {% else %}
+          <form method="post" action="/app/tokens/{{ t.id }}/revoke">
+            <button class="quiet tiny">Revoke</button>
+          </form>
+        {% endif %}
+      </div>
+      <div class="label" style="margin-top:.35rem">{{ t.scopes }}</div>
+      <div class="muted mono" style="font-size:.72rem;margin-top:.2rem">
+        created {{ t.created_at }} &middot; last used {{ t.last_seen_at or 'never' }}
+      </div>
     </div>
-    <div class="muted">{{ t.scopes }}</div>
-    <div class="muted">created {{ t.created_at }} &middot; last used {{ t.last_seen_at or 'never' }}</div>
-    {% if not t.revoked_at %}
-      <form method="post" action="/app/tokens/{{ t.id }}/revoke" style="margin-top:.6rem">
-        <button class="quiet">Revoke</button>
-      </form>
-    {% endif %}
-  </div>
-{% endfor %}
+  {% else %}
+    <div class="empty">No tokens yet.</div>
+  {% endfor %}
+</div>
 {% endblock %}

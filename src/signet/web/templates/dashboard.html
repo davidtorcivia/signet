@@ -2,40 +2,66 @@
 {% block title %}signet{% endblock %}
 {% block content %}
 
-<div class="stats">
-  <div class="stat"><b>{{ stats.captures_today }}</b><span>captured today</span></div>
-  <div class="stat"><b>{{ stats.requests_today }}</b><span>requests today</span></div>
-  <div class="stat"><b>${{ '%.4f'|format(stats.spend_today) }}</b><span>of ${{ '%.2f'|format(stats.cap) }} spent</span></div>
-  <div class="stat"><b>{{ stats.errors_today }}</b><span>errors today</span></div>
+<div class="pagehead">
+  <h1 class="title">Overview</h1>
+  <span class="spacer"></span>
+  <a href="/app/feed" class="label">Feed &rarr;</a>
 </div>
 
-<h2>Latency</h2>
+<div class="stats">
+  <div class="stat"><b>{{ stats.captures_today }}</b><span>Captured today</span></div>
+  <div class="stat"><b>{{ stats.requests_today }}</b><span>Requests today</span></div>
+  <div class="stat"><b>{{ '%.4f'|format(stats.spend_today) }}</b><span>Spent of {{ '%.2f'|format(stats.cap) }}</span></div>
+  <div class="stat"><b>{{ stats.errors_today }}</b><span>Errors today</span></div>
+</div>
+
+<h2 class="section">Activity, last 14 days</h2>
+<div class="panel">
+  <div class="row between">
+    <span class="mono" style="font-size:.8rem">{{ stats.journal_total }} notes total</span>
+    <span class="muted mono" style="font-size:.75rem">busiest {{ stats.busiest or 0 }} in a day</span>
+  </div>
+  <div class="chart">
+    {% for day in stats.activity %}
+      <div class="col" title="{{ day.date }}: {{ day.count }}">
+        <div class="bar {{ 'zero' if not day.count }}" style="height: {{ day.pct }}%"></div>
+      </div>
+    {% endfor %}
+  </div>
+  <div class="chart-axis">
+    <span>{{ stats.activity[0].date if stats.activity }}</span>
+    <span>{{ stats.activity[-1].date if stats.activity }}</span>
+  </div>
+</div>
+
+<h2 class="section">Latency by verb</h2>
 {% if stats.latency %}
-  <div class="card">
+  <div class="panel">
     {% for row in stats.latency %}
-      <div class="row" style="justify-content: space-between">
-        <span>{{ row.verb }}</span>
-        <span class="muted">p50 {{ row.p50 }}ms &middot; p95 {{ row.p95 }}ms &middot; {{ row.n }} calls</span>
+      <div class="item">
+        <div class="row between">
+          <b class="mono" style="font-size:.85rem">{{ row.verb }}</b>
+          <span class="muted mono" style="font-size:.75rem">
+            p50 {{ row.p50 }}ms &middot; p95 {{ row.p95 }}ms &middot; {{ row.n }} call{{ '' if row.n == 1 else 's' }}
+          </span>
+        </div>
+        <div class="meter"><i style="width: {{ row.pct }}%"></i></div>
       </div>
     {% endfor %}
   </div>
 {% else %}
-  <div class="card muted">Nothing yet.</div>
+  <div class="panel empty">Nothing measured yet.</div>
 {% endif %}
 
-<h2>Journal</h2>
-<div class="card">
-  <div class="row" style="justify-content: space-between">
-    <span>{{ stats.journal_total }} notes</span>
-    <span class="muted">{{ stats.journal_week }} this week</span>
-  </div>
+<h2 class="section">Tokens</h2>
+<div class="panel">
+  {% for token in tokens %}
+    <div class="item row between">
+      <span>{{ token.name }} {% if token.revoked_at %}<span class="tag bad">revoked</span>{% endif %}</span>
+      <span class="muted mono" style="font-size:.75rem">{{ token.last_seen_at or 'never used' }}</span>
+    </div>
+  {% else %}
+    <div class="empty">No tokens yet.</div>
+  {% endfor %}
 </div>
-
-<h2>Tokens</h2>
-{% for token in tokens %}
-  <div class="card row" style="justify-content: space-between">
-    <span>{{ token.name }}</span>
-    <span class="muted">{{ token.last_seen_at or 'never used' }}</span>
-  </div>
-{% endfor %}
 {% endblock %}
