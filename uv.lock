@@ -658,6 +658,7 @@ name = "signet"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "itsdangerous" },
     { name = "jinja2" },
     { name = "mcp" },
@@ -677,6 +678,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mcp", specifier = ">=1.9" },
