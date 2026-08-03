@@ -101,3 +101,44 @@ def test_legacy_journal_is_imported_once_and_renamed(conn: sqlite3.Connection, t
 
     # A second call is a no-op because the file is gone.
     assert db.import_legacy_journal(conn, jsonl) == 0
+
+
+def test_spoken_questions_match_their_notes(conn: sqlite3.Connection):
+    """Regression, and an expensive one.
+
+    A spoken question is mostly scaffolding. Requiring a note to contain "what", "happened"
+    and "to" meant natural questions matched nothing, and `ask` reads an empty journal result
+    as grounds to run a paid web search. So this failing silently cost money on questions the
+    journal could answer.
+    """
+    db.add_journal(conn, "the darkroom enlarger bulb blew on Tuesday and needs replacing")
+
+    for question in (
+        "what happened to the enlarger?",
+        "when did the enlarger bulb blow",
+        "tell me about the darkroom",
+        "did I say anything about replacing the bulb",
+    ):
+        found = db.search_journal(conn, question)
+        assert found, f"{question!r} found nothing"
+        assert "enlarger" in found[0]["text"]
+
+
+def test_best_match_ranks_first(conn: sqlite3.Connection):
+    db.add_journal(conn, "bought a new lens cap")
+    db.add_journal(conn, "the enlarger lamp needs a new bulb")
+    db.add_journal(conn, "lens cleaning cloth is in the drawer")
+
+    found = db.search_journal(conn, "what about the enlarger bulb")
+    assert "enlarger" in found[0]["text"], [r["text"] for r in found]
+
+
+def test_a_question_of_only_stopwords_still_searches(conn: sqlite3.Connection):
+    db.add_journal(conn, "what did I do")
+    assert db.search_journal(conn, "what did I do")
+
+
+def test_unrelated_question_still_finds_nothing(conn: sqlite3.Connection):
+    """OR plus ranking must not turn every query into a match on everything."""
+    db.add_journal(conn, "the enlarger bulb blew")
+    assert db.search_journal(conn, "quantum chromodynamics") == []

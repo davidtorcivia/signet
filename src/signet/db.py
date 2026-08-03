@@ -292,16 +292,35 @@ def add_journal(
 _FTS_TOKEN = re.compile(r"[A-Za-z0-9']+")
 
 
+# Question words and glue. A spoken question is mostly these, and requiring a note to contain
+# them is how "what happened to the enlarger?" fails to match a note that says the enlarger
+# blew. Kept deliberately short: this is about question scaffolding, not general stopwording.
+STOPWORDS = frozenset(
+    """a an and are as at be but by can did do does for from had has have how i if in into is
+    it its me my of on or say said tell that the their them then there these they this to was
+    were what when where which who whom why will with would you your about""".split()
+)
+
+
 def to_fts_query(query: str) -> str:
     """Turn free speech into a valid FTS5 expression.
 
-    Search terms arrive as transcribed speech: "what did I say about the enlarger?" Raw
-    punctuation is either a syntax error or, worse, silently matches nothing, which reads as
-    "signet forgot" rather than "bad query". So pull out word tokens, quote each one, and AND
-    them.
+    Two failures to avoid, both of which read as "signet forgot" rather than "bad query":
+
+    - Raw punctuation is either a syntax error or silently matches nothing.
+    - ANDing every word means a spoken question almost never matches, because the note does
+      not contain the question's scaffolding. That is worse than it sounds: `ask` treats an
+      empty journal result as grounds to run a paid web search, so bad matching quietly costs
+      money for questions the journal could have answered.
+
+    So: drop the scaffolding, OR what remains, and let bm25 rank. OR plus ranking beats AND
+    here because recall matters more than precision when the corpus is one person's notes.
     """
-    tokens = _FTS_TOKEN.findall(query)
-    return " AND ".join(f'"{token}"' for token in tokens)
+    tokens = [t for t in _FTS_TOKEN.findall(query.lower()) if len(t) > 1]
+    content = [t for t in tokens if t not in STOPWORDS]
+    # A question made entirely of stopwords ("what did I say?") still deserves a search.
+    terms = content or tokens
+    return " OR ".join(f'"{term}"' for term in terms)
 
 
 def search_journal(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[sqlite3.Row]:
@@ -313,7 +332,9 @@ def search_journal(conn: sqlite3.Connection, query: str, limit: int = 20) -> lis
         return list(
             conn.execute(
                 "SELECT j.* FROM journal_fts f JOIN journal j ON j.rowid = f.rowid "
-                "WHERE journal_fts MATCH ? ORDER BY j.created_at DESC LIMIT ?",
+                # bm25 first, so the note that best matches wins over the one that merely
+                # shares a common word; recency breaks ties.
+                "WHERE journal_fts MATCH ? ORDER BY f.rank, j.created_at DESC LIMIT ?",
                 (expression, limit),
             )
         )
