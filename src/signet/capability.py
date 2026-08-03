@@ -44,6 +44,10 @@ class Capability:
     result later. Decides sync vs async so no capability author has to think about the edge
     timeout."""
 
+    returns_untrusted: bool = False
+    """This capability pulls in text written by strangers. The registry marks its outcome so
+    callers cannot forget to fence it."""
+
     destructive: bool = False
     """Unlocking doors, deleting things, spending money. These queue for approval instead of
     running, because the ring cannot answer a confirmation prompt."""

@@ -105,6 +105,9 @@ class Verbs:
             return True
         return db.spend_today(conn) < self.cfg.daily_cost_cap_usd
 
+    def _web_available(self) -> bool:
+        return bool(self.cfg.exa_api_key)
+
     def _catalogue(self, scopes: frozenset[str]) -> list[tuple[str, str]]:
         return [
             (capability.name, capability.description)
@@ -147,12 +150,28 @@ class Verbs:
         recent = db.recent_journal(conn, days=14, limit=100)
         recent_text = "\n".join(f"- {r['created_at']}: {r['text']}" for r in recent) or "(none)"
 
+        # The journal answers questions about the user's own life. Anything else needs the
+        # web, so search it when the journal turned up nothing.
+        web_block = ""
+        web_cost = 0.0
+        sources: list[dict] = []
+        if not notes and self._web_available():
+            found_web = await self._run(
+                conn, request, "search.web", {"query": request.text, "results": 5}
+            )
+            if not found_web.is_error:
+                # Already fenced by the capability, and it stays fenced from here on.
+                web_block = f"\n\n{found_web.output}"
+                web_cost = found_web.cost_usd
+                sources = (found_web.data or {}).get("results", [])
+
         try:
             completion = await self.llm.complete(
                 system=ANSWER_SYSTEM,
                 user=(
                     f"Notes matching the question:\n{context}\n\n"
-                    f"The user's recent notes:\n{recent_text}\n\n"
+                    f"The user's recent notes:\n{recent_text}"
+                    f"{web_block}\n\n"
                     f"Question: {request.text}"
                 ),
                 max_tokens=300,
@@ -170,8 +189,8 @@ class Verbs:
         return Outcome(
             output=answer,
             semantic=coreschema.response(answer),
-            data=notes,
-            cost_usd=completion.cost_usd,
+            data={"notes": notes, "sources": sources},
+            cost_usd=completion.cost_usd + web_cost,
             model=completion.model,
             tokens_in=completion.tokens_in,
             tokens_out=completion.tokens_out,

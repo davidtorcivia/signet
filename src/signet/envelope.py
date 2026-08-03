@@ -58,6 +58,10 @@ class Outcome:
     semantic: dict[str, Any]
     data: Any = None
     is_error: bool = False
+    untrusted: bool = False
+    """True when this result contains text fetched from outside, such as web pages. Anything
+    derived from it must stay fenced, and must not be allowed to trigger further capabilities
+    without approval. Prompt injection is the reason."""
     cost_usd: float = 0.0
     model: str | None = None
     tokens_in: int | None = None

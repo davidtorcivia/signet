@@ -63,6 +63,15 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "capability": "journal.search",
         "args": {"query": "{rest}"},
     },
+    {
+        "match": "regex",
+        "pattern": (
+            r"^\s*(search|google|look up|find out)"
+            r"\b\s*(the web for\s+|online for\s+)?(?P<rest>.+)"
+        ),
+        "capability": "search.web",
+        "args": {"query": "{rest}"},
+    },
 ]
 
 CLASSIFY_SCHEMA = {

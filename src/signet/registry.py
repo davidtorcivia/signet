@@ -127,6 +127,11 @@ class Registry:
             logger.exception("capability %s failed", name)
             return _fail("That did not work.", recoverable=False)
 
+        # Set here rather than trusting the handler to remember. A capability declared as
+        # pulling in outside text always produces an untrusted outcome.
+        if capability.returns_untrusted:
+            outcome.untrusted = True
+
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.info("%s ok in %dms", name, elapsed_ms)
         return outcome

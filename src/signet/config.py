@@ -24,6 +24,7 @@ class Config:
     openrouter_api_key: str | None = None
     model: str = "deepseek/deepseek-v4-flash-0731"
     daily_cost_cap_usd: float = 2.0
+    exa_api_key: str | None = None
     admin_password: str | None = None
     session_secret: str = ""
 
@@ -89,6 +90,8 @@ def load(env: dict[str, str] | None = None) -> Config:
         daily_cost_cap_usd=float(src.get("SIGNET_DAILY_COST_CAP_USD", "2.00")),
         # No password means no portal. signet is reachable from the internet through the
         # tunnel, so an unauthenticated admin panel is not an acceptable default.
+        # Optional. Without it signet answers from the journal only.
+        exa_api_key=(src.get("EXA_API_KEY") or "").strip() or None,
         admin_password=(src.get("SIGNET_ADMIN_PASSWORD") or "").strip() or None,
         # Derived from the bearer token so sessions survive a restart without another
         # secret to manage. Distinct from the token itself so one cannot be used as the other.
