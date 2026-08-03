@@ -79,6 +79,23 @@ def load(env: dict[str, str] | None = None) -> Config:
     )
 
 
+_cached: Config | None = None
+
+
+def set_cached(cfg: Config) -> None:
+    """Publish the active config so capabilities can reach it without threading it through
+    every call. Set once at startup and in tests."""
+    global _cached
+    _cached = cfg
+
+
+def load_cached() -> Config:
+    global _cached
+    if _cached is None:
+        _cached = load()
+    return _cached
+
+
 def load_or_exit() -> Config:
     try:
         return load()

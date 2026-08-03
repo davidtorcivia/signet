@@ -21,10 +21,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 @dataclass(frozen=True)
 class Principal:
-    """Who is calling. P1 fills in scopes from the tokens table."""
+    """Who is calling, resolved from the bearer token."""
 
     client_id: str
     scopes: frozenset[str] = field(default_factory=frozenset)
+    token_id: int | None = None
+    rate_limit_per_min: int = 60
+
+    def has(self, scope: str) -> bool:
+        return scope in self.scopes
 
 
 class StaticTokenVerifier:
