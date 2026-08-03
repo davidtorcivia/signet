@@ -142,3 +142,66 @@ def test_unrelated_question_still_finds_nothing(conn: sqlite3.Connection):
     """OR plus ranking must not turn every query into a match on everything."""
     db.add_journal(conn, "the enlarger bulb blew")
     assert db.search_journal(conn, "quantum chromodynamics") == []
+
+
+def test_editing_a_note_updates_what_search_finds(conn: sqlite3.Connection):
+    """The journal is what `ask` answers from, so a corrected note must be findable by its new
+    wording and no longer by the old."""
+    entry_id = db.add_journal(conn, "the enlarger bulb blew")
+    assert db.update_journal(conn, entry_id, "the enlarger fuse blew, not the bulb")
+
+    assert db.search_journal(conn, "fuse")
+    assert db.search_journal(conn, "bulb")[0]["text"].endswith("not the bulb")
+    assert db.get_journal(conn, entry_id)["updated_at"]
+
+
+def test_empty_edit_is_refused(conn: sqlite3.Connection):
+    entry_id = db.add_journal(conn, "keep me")
+    assert db.update_journal(conn, entry_id, "   ") is False
+    assert db.get_journal(conn, entry_id)["text"] == "keep me"
+
+
+def test_deleted_notes_leave_the_corpus(conn: sqlite3.Connection):
+    """A deleted note must not come back as an answer. That is the whole point of removing
+    it, given the journal feeds the model."""
+    entry_id = db.add_journal(conn, "the darkroom is booked Thursday")
+    assert db.search_journal(conn, "darkroom")
+
+    assert db.delete_journal(conn, entry_id)
+    assert db.search_journal(conn, "darkroom") == []
+    assert db.recent_journal(conn) == []
+    assert db.list_journal(conn) == []
+
+
+def test_delete_is_recoverable(conn: sqlite3.Connection):
+    """Soft, because this project's premise is that what you said is not lost. A mis-tap on a
+    phone should cost one tap back."""
+    entry_id = db.add_journal(conn, "recover me")
+    db.delete_journal(conn, entry_id)
+
+    assert [r["text"] for r in db.list_journal(conn, deleted=True)] == ["recover me"]
+    assert db.restore_journal(conn, entry_id)
+    assert db.search_journal(conn, "recover")
+
+
+def test_deleting_twice_is_harmless(conn: sqlite3.Connection):
+    entry_id = db.add_journal(conn, "once")
+    assert db.delete_journal(conn, entry_id) is True
+    assert db.delete_journal(conn, entry_id) is False
+
+
+def test_editing_a_deleted_note_does_nothing(conn: sqlite3.Connection):
+    entry_id = db.add_journal(conn, "gone")
+    db.delete_journal(conn, entry_id)
+    assert db.update_journal(conn, entry_id, "back?") is False
+
+
+def test_purge_only_applies_to_deleted_notes(conn: sqlite3.Connection):
+    """Permanent deletion must not be reachable for a live note."""
+    entry_id = db.add_journal(conn, "still here")
+    assert db.purge_journal(conn, entry_id) is False
+    assert db.get_journal(conn, entry_id)
+
+    db.delete_journal(conn, entry_id)
+    assert db.purge_journal(conn, entry_id) is True
+    assert db.get_journal(conn, entry_id) is None

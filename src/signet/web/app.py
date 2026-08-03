@@ -245,15 +245,83 @@ async def journal(request: Request) -> Response:
     if not _authed(request):
         return RedirectResponse("/app/login", status_code=303)
     query = (request.query_params.get("q") or "").strip()
+    showing_deleted = request.query_params.get("show") == "deleted"
     conn = _conn(request)
     try:
-        if query:
+        if showing_deleted:
+            entries = db.list_journal(conn, deleted=True)
+        elif query:
             entries = db.search_journal(conn, query, limit=100)
         else:
-            entries = list(conn.execute("SELECT * FROM journal ORDER BY created_at DESC LIMIT 100"))
+            entries = db.list_journal(conn)
+        deleted_count = len(db.list_journal(conn, deleted=True, limit=1000))
     finally:
         conn.close()
-    return _render(request, "journal.html", page="journal", entries=entries, q=query)
+    return _render(
+        request,
+        "journal.html",
+        page="journal",
+        entries=entries,
+        q=query,
+        showing_deleted=showing_deleted,
+        deleted_count=deleted_count,
+        undo_id=request.session.pop("undo_id", None),
+    )
+
+
+def _back_to_journal(request: Request) -> str:
+    """Return to whichever view the action came from, so editing an entry found by search
+    does not dump you back at the top of an unfiltered list."""
+    return request.headers.get("referer") or "/app/journal"
+
+
+async def edit_journal(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    conn = _conn(request)
+    try:
+        db.update_journal(conn, request.path_params["entry_id"], str(form.get("text", "")))
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_journal(request), status_code=303)
+
+
+async def delete_journal(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    entry_id = request.path_params["entry_id"]
+    conn = _conn(request)
+    try:
+        if db.delete_journal(conn, entry_id):
+            # Offer undo on the next render. A mis-tap on a phone should cost one tap back.
+            request.session["undo_id"] = entry_id
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_journal(request), status_code=303)
+
+
+async def restore_journal(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.restore_journal(conn, request.path_params["entry_id"])
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_journal(request), status_code=303)
+
+
+async def purge_journal(request: Request) -> Response:
+    """Permanent. Only reachable from the deleted view."""
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.purge_journal(conn, request.path_params["entry_id"])
+    finally:
+        conn.close()
+    return RedirectResponse("/app/journal?show=deleted", status_code=303)
 
 
 async def tokens(request: Request) -> Response:
@@ -602,6 +670,10 @@ def build(cfg: Config) -> Starlette | None:
         Route("/feed", feed),
         Route("/feed/rows", feed_rows),
         Route("/journal", journal),
+        Route("/journal/{entry_id}/edit", edit_journal, methods=["POST"]),
+        Route("/journal/{entry_id}/delete", delete_journal, methods=["POST"]),
+        Route("/journal/{entry_id}/restore", restore_journal, methods=["POST"]),
+        Route("/journal/{entry_id}/purge", purge_journal, methods=["POST"]),
         Route("/tokens", tokens, methods=["GET"]),
         Route("/tokens", create_token, methods=["POST"]),
         Route("/tokens/{token_id:int}/revoke", revoke_token, methods=["POST"]),

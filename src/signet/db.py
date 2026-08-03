@@ -391,8 +391,10 @@ def search_journal(conn: sqlite3.Connection, query: str, limit: int = 20) -> lis
             conn.execute(
                 "SELECT j.* FROM journal_fts f JOIN journal j ON j.rowid = f.rowid "
                 # bm25 first, so the note that best matches wins over the one that merely
-                # shares a common word; recency breaks ties.
-                "WHERE journal_fts MATCH ? ORDER BY f.rank, j.created_at DESC LIMIT ?",
+                # shares a common word; recency breaks ties. Deleted rows stay out of the
+                # corpus entirely, so a note you removed cannot come back as an answer.
+                "WHERE journal_fts MATCH ? AND j.deleted_at IS NULL "
+                "ORDER BY f.rank, j.created_at DESC LIMIT ?",
                 (expression, limit),
             )
         )
@@ -400,7 +402,8 @@ def search_journal(conn: sqlite3.Connection, query: str, limit: int = 20) -> lis
         # Belt and braces: a tokenizer change should degrade to a scan, not a 500.
         return list(
             conn.execute(
-                "SELECT * FROM journal WHERE text LIKE ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM journal WHERE text LIKE ? AND deleted_at IS NULL "
+                "ORDER BY created_at DESC LIMIT ?",
                 (f"%{query}%", limit),
             )
         )
@@ -410,7 +413,7 @@ def recent_journal(conn: sqlite3.Connection, days: int = 14, limit: int = 200) -
     return list(
         conn.execute(
             "SELECT * FROM journal WHERE created_at >= datetime('now', ?) "
-            "ORDER BY created_at DESC LIMIT ?",
+            "AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
             (f"-{days} days", limit),
         )
     )
@@ -465,3 +468,59 @@ def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
 def clear_config(conn: sqlite3.Connection, key: str) -> None:
     """Drop the override so the environment value applies again."""
     set_setting(conn, CONFIG_PREFIX + key, "")
+
+
+def list_journal(
+    conn: sqlite3.Connection, *, limit: int = 100, deleted: bool = False
+) -> list[sqlite3.Row]:
+    clause = "IS NOT NULL" if deleted else "IS NULL"
+    order = "deleted_at" if deleted else "created_at"
+    return list(
+        conn.execute(
+            f"SELECT * FROM journal WHERE deleted_at {clause} ORDER BY {order} DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
+def get_journal(conn: sqlite3.Connection, entry_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM journal WHERE id = ?", (entry_id,)).fetchone()
+
+
+def update_journal(conn: sqlite3.Connection, entry_id: str, text: str) -> bool:
+    """Correct a note. The FTS index follows via the AFTER UPDATE trigger, so a fixed note is
+    immediately findable by its new wording and no longer by the old."""
+    text = text.strip()
+    if not text:
+        return False
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE journal SET text = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (text, now_iso(), entry_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_journal(conn: sqlite3.Connection, entry_id: str) -> bool:
+    """Soft delete: out of the corpus, still recoverable."""
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE journal SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (now_iso(), entry_id),
+        )
+    return cur.rowcount > 0
+
+
+def restore_journal(conn: sqlite3.Connection, entry_id: str) -> bool:
+    with transaction(conn):
+        cur = conn.execute("UPDATE journal SET deleted_at = NULL WHERE id = ?", (entry_id,))
+    return cur.rowcount > 0
+
+
+def purge_journal(conn: sqlite3.Connection, entry_id: str) -> bool:
+    """Actually gone. Only reachable from the deleted view, never from the main list."""
+    with transaction(conn):
+        cur = conn.execute(
+            "DELETE FROM journal WHERE id = ? AND deleted_at IS NOT NULL", (entry_id,)
+        )
+    return cur.rowcount > 0

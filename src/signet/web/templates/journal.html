@@ -2,28 +2,90 @@
 {% block title %}Journal{% endblock %}
 {% block content %}
 <div class="pagehead">
-  <h1 class="title">Journal</h1>
+  <h1 class="title">{{ 'Deleted' if showing_deleted else 'Journal' }}</h1>
   <span class="spacer"></span>
   <span class="label">{{ entries|length }} shown</span>
 </div>
 
-<form class="inline" method="get" action="/app/journal" style="margin-bottom:1rem">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search everything you have said" autocomplete="off">
-  <button>Search</button>
-</form>
+{% if undo_id %}
+  <div class="notice accent">
+    <div class="row between">
+      <span>Deleted. Out of search, not gone.</span>
+      <form method="post" action="/app/journal/{{ undo_id }}/restore">
+        <button class="tiny">Undo</button>
+      </form>
+    </div>
+  </div>
+{% endif %}
+
+{% if showing_deleted %}
+  <div class="notice">
+    <div class="row between">
+      <span class="muted">Hidden from search and from answers.</span>
+      <a href="/app/journal" class="label">Back to journal &rarr;</a>
+    </div>
+  </div>
+{% else %}
+  <form class="inline" method="get" action="/app/journal" style="margin-bottom:1rem">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search everything you have said"
+           autocomplete="off">
+    <button>Search</button>
+  </form>
+{% endif %}
 
 <div class="panel">
   {% if not entries %}
-    <div class="empty">{{ 'Nothing matches.' if q else 'No notes yet.' }}</div>
+    <div class="empty">
+      {% if showing_deleted %}Nothing deleted.
+      {% elif q %}Nothing matches.
+      {% else %}No notes yet.{% endif %}
+    </div>
   {% endif %}
+
   {% for e in entries %}
     <div class="item">
       <div class="row between">
-        <span class="label">{{ e.kind }}</span>
-        <span class="muted mono" style="font-size:.72rem">{{ e.created_at }}</span>
+        <span class="label">
+          {{ e.kind }}{% if e.updated_at and not showing_deleted %} &middot; edited{% endif %}
+        </span>
+        <span class="muted mono" style="font-size:.72rem">
+          {{ e.deleted_at if showing_deleted else e.created_at }}
+        </span>
       </div>
       <p class="said">{{ e.text }}</p>
+
+      {% if showing_deleted %}
+        <div class="row" style="margin-top:.5rem">
+          <form method="post" action="/app/journal/{{ e.id }}/restore">
+            <button class="quiet tiny">Restore</button>
+          </form>
+          <form method="post" action="/app/journal/{{ e.id }}/purge">
+            <button class="danger tiny">Delete for good</button>
+          </form>
+        </div>
+      {% else %}
+        {# details keeps the list scannable and needs no JavaScript. Sibling forms, never
+           nested: a form inside a form is invalid and the inner one is dropped. #}
+        <details style="margin-top:.4rem">
+          <summary class="label" style="cursor:pointer;min-height:32px">Edit</summary>
+          <form method="post" action="/app/journal/{{ e.id }}/edit" style="margin-top:.5rem">
+            <textarea name="text" rows="3">{{ e.text }}</textarea>
+            <div style="margin-top:.5rem"><button class="tiny">Save</button></div>
+          </form>
+          <form method="post" action="/app/journal/{{ e.id }}/delete" style="margin-top:.5rem">
+            <button class="quiet tiny">Delete</button>
+          </form>
+        </details>
+      {% endif %}
     </div>
   {% endfor %}
 </div>
+
+{% if not showing_deleted and deleted_count %}
+  <div class="row" style="margin-top:.9rem">
+    <a href="/app/journal?show=deleted" class="label">
+      {{ deleted_count }} deleted note{{ '' if deleted_count == 1 else 's' }} &rarr;
+    </a>
+  </div>
+{% endif %}
 {% endblock %}

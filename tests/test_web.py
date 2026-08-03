@@ -407,3 +407,67 @@ def test_p95_is_never_below_p50():
     assert _percentile(list(range(1, 101)), 0.95) == 95
     for sample in ([5, 9], [1, 2, 3], [7] * 4, [10, 200, 30]):
         assert _percentile(sample, 0.95) >= statistics.median(sample)
+
+
+async def test_journal_entries_can_be_edited(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    entry_id = db.add_journal(conn, "the enlarger bulb blew")
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/journal")).text
+    assert f"/app/journal/{entry_id}/edit" in body
+
+    await client.post(f"/journal/{entry_id}/edit", data={"text": "the enlarger fuse blew"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_journal(conn, entry_id)["text"] == "the enlarger fuse blew"
+    conn.close()
+
+
+async def test_deleting_offers_undo_and_keeps_the_note(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    entry_id = db.add_journal(conn, "deleted by mistake")
+    conn.close()
+
+    await sign_in(client)
+    await client.post(f"/journal/{entry_id}/delete")
+
+    body = (await client.get("/journal")).text
+    assert "Undo" in body
+    assert "deleted by mistake" not in body
+
+    await client.post(f"/journal/{entry_id}/restore")
+    assert "deleted by mistake" in (await client.get("/journal")).text
+
+
+async def test_deleted_view_lists_and_purges(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    entry_id = db.add_journal(conn, "really going")
+    db.delete_journal(conn, entry_id)
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/journal", params={"show": "deleted"})).text
+    assert "really going" in body
+    assert "Delete for good" in body
+
+    await client.post(f"/journal/{entry_id}/purge")
+    conn = db.connect(cfg.db_path)
+    assert db.get_journal(conn, entry_id) is None
+    conn.close()
+
+
+async def test_journal_mutations_require_a_session(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    entry_id = db.add_journal(conn, "protected")
+    conn.close()
+
+    for path in ("edit", "delete", "restore", "purge"):
+        response = await client.post(f"/journal/{entry_id}/{path}", data={"text": "hacked"})
+        assert response.status_code == 303
+        assert response.headers["location"] == "/app/login"
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_journal(conn, entry_id)["text"] == "protected"
+    conn.close()
