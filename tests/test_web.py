@@ -559,3 +559,14 @@ async def test_connect_offered_once_both_are_set(client: httpx.AsyncClient, cfg)
 
     await sign_in(client)
     assert 'action="/app/google/connect"' in (await client.get("/settings")).text
+
+
+async def test_tokens_page_shows_what_the_ring_needs(client: httpx.AsyncClient):
+    """Setup happens on a phone, so the URL and the two settings that break it live next to
+    the token rather than in a document on another device."""
+    await sign_in(client)
+    body = (await client.get("/tokens", headers={"host": "signet.example.com"})).text
+
+    assert "https://signet.example.com/mcp" in body
+    assert "Streamable" in body
+    assert "including the word Bearer" in body

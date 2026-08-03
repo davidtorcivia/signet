@@ -13,6 +13,22 @@
   </div>
 {% endif %}
 
+<h2 class="section">Connect the ring</h2>
+<div class="panel">
+  <div class="label">Server URL</div>
+  <pre>{{ mcp_url }}</pre>
+  <div class="label" style="margin-top:.7rem">Streamable</div>
+  <div style="margin-top:.2rem">
+    On. Left off, the app falls back to SSE, which the tunnel buffers until the request ends,
+    so nothing ever arrives.
+  </div>
+  <div class="label" style="margin-top:.7rem">Authorization header</div>
+  <div style="margin-top:.2rem">
+    The whole line below, <b>including the word Bearer</b>. A bare token is rejected.
+  </div>
+  <pre>Bearer &lt;token from above&gt;</pre>
+</div>
+
 <form class="inline" method="post" action="/app/tokens" style="margin-bottom:1rem">
   <input type="text" name="name" placeholder="Name, for example ring" required>
   <button>Create</button>

@@ -333,7 +333,15 @@ async def tokens(request: Request) -> Response:
     finally:
         conn.close()
     new_token = request.session.pop("new_token", None)
-    return _render(request, "tokens.html", page="tokens", tokens=rows, new_token=new_token)
+    return _render(
+        request,
+        "tokens.html",
+        page="tokens",
+        tokens=rows,
+        new_token=new_token,
+        # Built the same way as the OAuth redirect, so it is right behind the tunnel.
+        mcp_url=_public_base(request) + "/mcp",
+    )
 
 
 async def create_token(request: Request) -> Response:
