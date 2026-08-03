@@ -1,9 +1,30 @@
-"""The Pebble app's private result contract.
+"""The Pebble app's private result contract. This is also how signet reaches the watch.
 
-An ordinary MCP result works fine — the app hands `content` text to its on-device model.
-But a result carrying `_meta.coreSchema` plus `structuredContent.semanticResult` is rendered
-as a first-class item in the app's feed (Todos / Notes / Answers / Actions) instead of as a
-raw blob. See `docs/00-research.md` §2.
+An ordinary MCP result works fine: the app hands `content` text to its on-device model. But a
+result carrying `_meta.coreSchema` plus `structuredContent.semanticResult` is rendered as a
+first-class item in the app's feed (Todos / Notes / Answers / Actions) instead of as a raw
+blob, and `Response` is what the app surfaces in its completion notification, which is what
+lands on the watch.
+
+**Getting on the watch is therefore a property of the semanticResult, not a separate feature.**
+Every capability picks the variant that matches what it did:
+
+| What happened | Variant | What the user sees |
+| --- | --- | --- |
+| Answered a question | `Response` | The answer, on the watch |
+| Made a calendar event | `CalendarEventCreation` | Confirmation with time and title |
+| Created a task/reminder | `TaskCreation` | Confirmation with title and deadline |
+| Added to a list | `ListItemCreation` | Confirmation |
+| Set an alarm or timer | `AlarmCreation` / `TimerCreation` | Confirmation |
+| Sent a message | `MessageSent` | Confirmation |
+| Did something else | `ActionLogged` | A logged action |
+| Returned data mid-thought | `SupportingData` | Nothing; the model keeps going |
+| Failed | `GenericFailure` | The error |
+
+Because these are read on a watch face, `Response.text` should be one or two sentences. Long
+prose is the wrong shape for the medium regardless of how good the answer is.
+
+See `docs/00-research.md` §2.
 
 Verified against `mcp/src/commonMain/kotlin/coredevices/mcp/data/ToolCallResult.kt` in
 coredevices/mobileapp on 2026-08-03:
@@ -46,6 +67,59 @@ def supporting_data(
     if question is not None:
         out["question"] = question
     return out
+
+
+def calendar_event(
+    title: str, start_time: str, end_time: str, location: str | None = None
+) -> dict[str, Any]:
+    """Confirmation of a created event. Times are ISO-8601 strings."""
+    out: dict[str, Any] = {"title": title, "startTime": start_time, "endTime": end_time}
+    if location is not None:
+        out["location"] = location
+    return {"type": "CalendarEventCreation", **out}
+
+
+def task_created(
+    title: str,
+    deadline: str,
+    *,
+    local_reminder_id: str | None = None,
+    notify_before_millis: int | None = None,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": "TaskCreation", "title": title, "deadline": deadline}
+    if local_reminder_id is not None:
+        out["localReminderId"] = local_reminder_id
+    if notify_before_millis is not None:
+        out["notifyBeforeMillis"] = notify_before_millis
+    return out
+
+
+def list_item(
+    content: str,
+    *,
+    list_used: str | None = None,
+    remind_at: str | None = None,
+    resolved_list_id: str | None = None,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": "ListItemCreation", "content": content}
+    if list_used is not None:
+        out["listUsed"] = list_used
+    if remind_at is not None:
+        out["remindAt"] = remind_at
+    if resolved_list_id is not None:
+        out["resolvedListId"] = resolved_list_id
+    return out
+
+
+def action_logged(tool_name: str, title: str, success: bool, body: str = "") -> dict[str, Any]:
+    """The catch-all for "signet did a thing" that has no richer variant."""
+    return {
+        "type": "ActionLogged",
+        "toolName": tool_name,
+        "title": title,
+        "success": success,
+        "body": body,
+    }
 
 
 def generic_failure(

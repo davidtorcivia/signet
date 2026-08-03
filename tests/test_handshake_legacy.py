@@ -142,10 +142,10 @@ def test_capture_returns_core_schema_shape(legacy: LegacyClient, cfg):
     # Plain-text clients must still get something.
     assert result["content"][0]["text"] == "Saved."
 
-    from signet import journal
+    from signet import db
 
-    rows = journal.read_all(cfg.journal_path)
-    assert [r["text"] for r in rows] == ["handshake test"]
+    conn = db.connect(cfg.db_path)
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["handshake test"]
 
 
 def test_semantic_result_carries_no_unknown_keys(legacy: LegacyClient):

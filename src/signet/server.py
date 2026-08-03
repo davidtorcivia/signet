@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from . import coreschema, journal
+from . import coreschema, db
 from .auth import BearerAuthMiddleware, StaticTokenVerifier
 from .config import Config
 
@@ -72,13 +72,20 @@ def build_mcp_server(cfg: Config) -> Server:
         text = (args.get("text") or "").strip()
         if not text:
             return coreschema.result(
-                "Nothing to save — no text was provided.",
+                "Nothing to save, no text was provided.",
                 coreschema.generic_failure("Nothing to save.", llm_recoverable=True),
                 is_error=True,
             )
 
-        record = journal.append(cfg.journal_path, text)
-        logger.info("capture id=%s chars=%d", record["id"], len(text))
+        conn = db.connect(cfg.db_path)
+        try:
+            request_id = db.start_request(conn, text=text, source="mcp:ring", verb="capture")
+            entry_id = db.add_journal(conn, text, request_id=request_id)
+            db.finish_request(conn, request_id, status="ok", result={"journal_id": entry_id})
+        finally:
+            conn.close()
+
+        logger.info("capture id=%s chars=%d", entry_id, len(text))
         return coreschema.result("Saved.", coreschema.response("Saved."))
 
     return Server(
@@ -94,10 +101,30 @@ async def _healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "signet"})
 
 
+def init_storage(cfg: Config) -> None:
+    """Migrate, register the env token as a row, and absorb any P0 journal file.
+
+    Runs at boot rather than lazily, so a broken schema stops the container instead of
+    surfacing on the first ring press.
+    """
+    conn = db.connect(cfg.db_path)
+    try:
+        applied = db.migrate(conn)
+        if applied:
+            logger.info("applied migrations: %s", ", ".join(applied))
+        db.seed_token(conn, cfg.token)
+        imported = db.import_legacy_journal(conn, cfg.journal_path)
+        if imported:
+            logger.info("imported %d captures from the P0 journal file", imported)
+    finally:
+        conn.close()
+
+
 def create_app(cfg: Config | None = None):
     from . import config as config_module
 
     cfg = cfg or config_module.load()
+    init_storage(cfg)
     server = build_mcp_server(cfg)
 
     app = server.streamable_http_app(

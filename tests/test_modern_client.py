@@ -21,7 +21,7 @@ from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
-from signet import journal
+from signet import db
 
 from .conftest import TOKEN
 
@@ -66,5 +66,6 @@ async def test_modern_client_can_call_capture(server: str, cfg):
 
     assert not result.is_error
     assert result.content[0].text == "Saved."
-    rows = journal.read_all(cfg.journal_path)
-    assert [r["text"] for r in rows] == ["from a modern client"]
+
+    conn = db.connect(cfg.db_path)
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["from a modern client"]

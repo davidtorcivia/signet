@@ -23,7 +23,13 @@ class Config:
 
     @property
     def journal_path(self) -> Path:
+        """P0's flat file. Still referenced so its contents can be imported on first boot
+        after the SQLite migration; see db.import_legacy_journal."""
         return self.data_dir / "journal.jsonl"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "signet.db"
 
 
 def load(env: dict[str, str] | None = None) -> Config:
