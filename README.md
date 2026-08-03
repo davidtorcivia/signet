@@ -9,12 +9,30 @@ A signet is a ring you press to authorize things.
 
 ## Status
 
-Early. One tool works end to end: `capture` saves whatever you say to a journal file. It runs in
-Docker behind a Cloudflare Tunnel and has been verified against the real protocol the Pebble app
-speaks.
+Working and deployed. Four tools (`capture`, `ask`, `schedule`, `do`), SQLite with full text
+search, scoped tokens, web search, and a mobile admin portal. Runs in Docker behind a
+Cloudflare Tunnel, verified against the real protocol the Pebble app speaks.
 
-Still to build: the router, the other three verbs (`ask`, `schedule`, `do`), calendar, and the
-admin portal. The plan is in [docs/03-implementation-plan.md](docs/03-implementation-plan.md).
+Not built yet: Google Calendar, so `schedule` saves the request and says so rather than
+dropping it. Also no approval queue, so anything marked destructive refuses to run. The plan is
+in [docs/03-implementation-plan.md](docs/03-implementation-plan.md).
+
+## How it works
+
+Four tools is the whole surface the phone sees, because a ~1B on-device model has to pick one
+and more choices make it worse. Behind them sits an unbounded set of internal capabilities.
+
+- `capture` saves what you said. No model call, and it still works when everything else is off.
+- `ask` searches your journal, falls back to the web, and answers in one or two sentences.
+- `schedule` is a calendar stub for now.
+- `do` is the catch-all. Rules run first, then a model classifies what is left.
+
+Answers come back in the MCP response itself, which is what renders in the app feed and reaches
+the watch. Push notifications are a fallback for work too slow to answer inline, not the normal
+path.
+
+Nothing you say is dropped. No API key, spent budget, provider down, unrecognised request, or
+unbuilt feature all end with the text in your journal and a plain answer saying so.
 
 ## What we learned about the Pebble app
 

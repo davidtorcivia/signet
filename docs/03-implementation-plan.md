@@ -443,7 +443,11 @@ exactly `2025-06-18` (not silently upgraded), and `instructions` is present in t
 
 ## Status
 
-**P0a is deployed and running on erebus (2026-08-03).** 17 tests green locally; the container
+**P1 is complete and deployed (2026-08-03).** 103 tests green. Live behind the tunnel with
+four verbs, SQLite + FTS5, scoped tokens, Exa web search, and the admin portal at `/app`.
+Remaining for P2: Google Calendar, the approval queue, and the job queue.
+
+**P0a was deployed and running on erebus (2026-08-03).** 17 tests green locally; the container
 is up and healthy at `/srv/apps/signet/`, survives a restart, and passes every check in
 `scripts/legacy_handshake.py` against `http://127.0.0.1:8300`. The Claude Code CLI reports
 `✔ Connected`. Remaining: David points the tunnel at `localhost:8300`
