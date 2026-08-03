@@ -20,6 +20,9 @@ class Config:
     data_dir: Path
     host: str
     port: int
+    openrouter_api_key: str | None = None
+    model: str = "deepseek/deepseek-v4-flash-0731"
+    daily_cost_cap_usd: float = 2.0
 
     @property
     def journal_path(self) -> Path:
@@ -76,6 +79,11 @@ def load(env: dict[str, str] | None = None) -> Config:
         data_dir=data_dir,
         host=src.get("SIGNET_HOST", "0.0.0.0"),
         port=int(src.get("SIGNET_PORT", "8300")),
+        # Optional on purpose. Without it signet is still a recorder and a search engine,
+        # which is most of the value, so a missing key degrades rather than blocks.
+        openrouter_api_key=(src.get("OPENROUTER_API_KEY") or "").strip() or None,
+        model=src.get("SIGNET_MODEL", "deepseek/deepseek-v4-flash-0731"),
+        daily_cost_cap_usd=float(src.get("SIGNET_DAILY_COST_CAP_USD", "2.00")),
     )
 
 

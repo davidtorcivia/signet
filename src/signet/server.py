@@ -1,8 +1,4 @@
-"""ASGI wiring: the MCP surface at /mcp, an unauthenticated /healthz, bearer auth in front.
-
-P0 scope: one tool, `capture`. Everything else in the design (`docs/02-architecture.md`) —
-envelope, router, registry, capabilities — arrives in P1 behind this same surface.
-"""
+"""ASGI wiring: the MCP surface at /mcp, an unauthenticated /healthz, bearer auth in front."""
 
 from __future__ import annotations
 
@@ -10,94 +6,74 @@ import logging
 
 import mcp.types as types
 from mcp.server.lowlevel import Server
-from starlette.requests import Request
+from starlette.requests import Request as HTTPRequest
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from . import config as config_module
 from . import coreschema, db
-from .auth import BearerAuthMiddleware, StaticTokenVerifier
+from .auth import BearerAuthMiddleware, DbTokenVerifier, Principal
 from .config import Config
+from .envelope import Request
+from .llm import LLM
+from .registry import Registry
+from .router import Router
+from .verbs import INSTRUCTIONS, TOOLS, Verbs
 
 logger = logging.getLogger("signet")
 
-# Injected into the on-device model's context via `initialize` (the client returns
-# `serverInstructions` from `getExtraContext()`). A free system-prompt channel —
-# `docs/00-research.md` §2. Keep it short: it is prepended to a ~1B model's context.
-INSTRUCTIONS = (
-    "signet stores what you say. Prefer the capture tool for anything the user wants "
-    "remembered, noted, or written down."
-)
 
-# One required string field. The caller is a ~1B on-device tool-calling model; every
-# optional field is another way for it to produce something unusable.
-CAPTURE_TOOL = types.Tool(
-    name="capture",
-    description=(
-        "Save a note, thought, or reminder exactly as spoken. "
-        "Use when the user wants something remembered or written down."
-    ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "text": {
-                "type": "string",
-                "description": "The note to save, in the user's own words.",
-            }
-        },
-        "required": ["text"],
-        "additionalProperties": False,
-    },
-)
-
-
-def build_mcp_server(cfg: Config) -> Server:
+def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
     async def on_list_tools(ctx: object, params: object) -> types.ListToolsResult:
-        # No nextCursor, ever. The Pebble client hits `TODO("Handle pagination")` and
-        # throws if one is present (`docs/00-research.md` §2). Keep the list to one page.
-        return types.ListToolsResult(tools=[CAPTURE_TOOL])
+        # No nextCursor, ever. The Pebble client hits `TODO("Handle pagination")` and throws
+        # if one is present (docs/00-research.md section 2). One page, four verbs.
+        return types.ListToolsResult(tools=TOOLS)
 
     async def on_call_tool(
         ctx: object, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
-        if params.name != "capture":
-            return coreschema.result(
-                f"Unknown tool: {params.name}",
-                coreschema.generic_failure(
-                    f"signet has no tool called {params.name}.", llm_recoverable=False
-                ),
-                is_error=True,
-            )
+        arguments = params.arguments or {}
+        principal = _principal_from(ctx) or Principal(client_id="unknown")
 
-        args = params.arguments or {}
-        text = (args.get("text") or "").strip()
+        from .verbs import ARG_NAMES
+
+        text = str(arguments.get(ARG_NAMES.get(params.name, "text"), "") or "").strip()
         if not text:
             return coreschema.result(
-                "Nothing to save, no text was provided.",
-                coreschema.generic_failure("Nothing to save.", llm_recoverable=True),
+                "Nothing to do, no text was provided.",
+                coreschema.generic_failure("Nothing to do.", llm_recoverable=True),
                 is_error=True,
             )
 
+        request = Request(text=text, source="mcp:ring", client=principal, verb=params.name)
         conn = db.connect(cfg.db_path)
         try:
-            request_id = db.start_request(conn, text=text, source="mcp:ring", verb="capture")
-            entry_id = db.add_journal(conn, text, request_id=request_id)
-            db.finish_request(conn, request_id, status="ok", result={"journal_id": entry_id})
+            outcome = await verbs.call(conn, params.name, request)
         finally:
             conn.close()
 
-        logger.info("capture id=%s chars=%d", entry_id, len(text))
-        return coreschema.result("Saved.", coreschema.response("Saved."))
+        return coreschema.result(outcome.output, outcome.semantic, is_error=outcome.is_error)
 
     return Server(
         "signet",
-        version="0.1.0",
+        version="0.2.0",
         instructions=INSTRUCTIONS,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )
 
 
-async def _healthz(request: Request) -> JSONResponse:
+def _principal_from(ctx: object) -> Principal | None:
+    """The auth middleware stashes the resolved caller on the ASGI scope. The SDK does not
+    hand that through, so it is read back off the request context when available."""
+    request = getattr(ctx, "request", None)
+    scope = getattr(request, "scope", None)
+    if isinstance(scope, dict):
+        return scope.get("signet.principal")
+    return None
+
+
+async def _healthz(request: HTTPRequest) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "signet"})
 
 
@@ -120,24 +96,29 @@ def init_storage(cfg: Config) -> None:
         conn.close()
 
 
-def create_app(cfg: Config | None = None):
-    from . import config as config_module
+def build_verbs(cfg: Config) -> Verbs:
+    registry = Registry()
+    registry.discover()
+    llm = LLM(cfg.openrouter_api_key, model=cfg.model)
+    router = Router(llm, rules_path=cfg.data_dir / "rules.yaml")
+    return Verbs(cfg=cfg, registry=registry, llm=llm, router=router)
 
+
+def create_app(cfg: Config | None = None):
     cfg = cfg or config_module.load()
+    config_module.set_cached(cfg)
     init_storage(cfg)
-    server = build_mcp_server(cfg)
+
+    server = build_mcp_server(cfg, build_verbs(cfg))
 
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
         # The transport's default is SSE-framed POST responses, which Cloudflare Tunnel
-        # buffers until the stream closes (`docs/00-research.md` §5.1). Single JSON
+        # buffers until the stream closes (docs/00-research.md section 5.1). Single JSON
         # responses are the entire reason the tunnel path works. Do not remove.
         json_response=True,
         custom_starlette_routes=[Route("/healthz", _healthz, methods=["GET"])],
-        # Explicit: with host 0.0.0.0 the SDK does not auto-enable DNS-rebinding
-        # protection. Behind Caddy the Host header is the public hostname, and the
-        # tunnel is the trust boundary.
         host=cfg.host,
     )
 
-    return BearerAuthMiddleware(app, StaticTokenVerifier(cfg.token))
+    return BearerAuthMiddleware(app, DbTokenVerifier(cfg))

@@ -220,12 +220,23 @@ def start_request(
     client_id: int | None = None,
 ) -> str:
     request_id = new_id()
-    with transaction(conn):
-        conn.execute(
-            "INSERT INTO requests(id, received_at, source, verb, client_id, text) "
-            "VALUES (?,?,?,?,?,?)",
-            (request_id, now_iso(), source, verb, client_id, text),
-        )
+    try:
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO requests(id, received_at, source, verb, client_id, text) "
+                "VALUES (?,?,?,?,?,?)",
+                (request_id, now_iso(), source, verb, client_id, text),
+            )
+    except sqlite3.IntegrityError:
+        # The client_id no longer resolves, most likely a token deleted mid-flight. Record
+        # the request without an owner rather than failing: the audit trail is important, but
+        # not more important than not dropping what the user said.
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO requests(id, received_at, source, verb, client_id, text) "
+                "VALUES (?,?,?,?,?,?)",
+                (request_id, now_iso(), source, verb, None, text),
+            )
     return request_id
 
 

@@ -158,7 +158,9 @@ def main() -> int:
         # The Kotlin client literally has TODO("Handle pagination") here.
         check("nextCursor" not in result, "no nextCursor in tools/list")
         names = [t.get("name") for t in result.get("tools", [])]
-        check(names == ["capture"], "exactly one tool: capture", str(names))
+        check("capture" in names, "capture is offered", str(names))
+        # A ~1B on-device model chooses from this list; too many tools degrade it badly.
+        check(len(names) <= 8, "tool count stays small", f"{len(names)} tools")
 
     print("[4] tools/call capture")
     body, _, _ = post(

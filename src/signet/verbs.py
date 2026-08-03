@@ -1,0 +1,247 @@
+"""The four tools the ring sees.
+
+These are inlet adapters, not capabilities. Each builds a Request, decides what to do, and
+hands off to the registry. Keeping the MCP surface at four verbs is what keeps the on-device
+model able to choose correctly while the internal toolbelt grows without limit.
+
+Everything here answers **in band**. The result of an MCP call is what renders in the app feed
+and surfaces on the watch, so a synchronous answer is a native answer. The tunnel round trip
+measured 50-62ms against a roughly 100 second edge budget, so there is room to simply finish
+the work. Deferring to a push notification is the fallback for genuinely long jobs, not the
+normal path.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+import time
+from dataclasses import dataclass
+
+import mcp.types as types
+
+from . import coreschema, db
+from .config import Config
+from .envelope import Outcome, Request
+from .llm import LLM, LLMUnavailable
+from .registry import Registry
+from .router import Router
+
+logger = logging.getLogger("signet.verbs")
+
+# Answers are read on a watch face. This is a prompt instruction rather than a truncation:
+# a model told to be brief writes a good short answer, while chopping a long one mid-sentence
+# produces nonsense.
+ANSWER_SYSTEM = (
+    "You answer questions for someone reading the reply on a smart watch. "
+    "Answer in one or two short sentences. No preamble, no markdown, no lists. "
+    "If the answer is in the provided notes, use them. If you do not know, say so briefly."
+)
+
+INSTRUCTIONS = (
+    "signet is the user's own server. It remembers what they say and can answer from it. "
+    "Use capture for anything to remember. Use ask for questions about their own notes or "
+    "the world. Use schedule for calendar requests. Use do for anything else."
+)
+
+
+def _tool(name: str, description: str, properties: dict, required: list[str]) -> types.Tool:
+    return types.Tool(
+        name=name,
+        description=description,
+        inputSchema={
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+    )
+
+
+TOOLS = [
+    _tool(
+        "capture",
+        "Save a note, thought, or reminder exactly as spoken. "
+        "Use when the user wants something remembered or written down.",
+        {"text": {"type": "string", "description": "The note, in the user's own words."}},
+        ["text"],
+    ),
+    _tool(
+        "ask",
+        "Answer a question, including questions about things the user said before.",
+        {"question": {"type": "string", "description": "The question, as asked."}},
+        ["question"],
+    ),
+    _tool(
+        "schedule",
+        "Create or change a calendar event from a spoken request.",
+        {"request": {"type": "string", "description": "The scheduling request, as spoken."}},
+        ["request"],
+    ),
+    _tool(
+        "do",
+        "Carry out a request that is not a note, a question, or a calendar change.",
+        {"request": {"type": "string", "description": "The request, as spoken."}},
+        ["request"],
+    ),
+]
+
+ARG_NAMES = {"capture": "text", "ask": "question", "schedule": "request", "do": "request"}
+
+
+@dataclass
+class Verbs:
+    cfg: Config
+    registry: Registry
+    llm: LLM
+    router: Router
+
+    # --- helpers ------------------------------------------------------------------
+
+    def _budget_left(self, conn: sqlite3.Connection) -> bool:
+        """The runaway-loop breaker. Capture never consults this: it costs nothing and must
+        never fail."""
+        if self.cfg.daily_cost_cap_usd <= 0:
+            return True
+        return db.spend_today(conn) < self.cfg.daily_cost_cap_usd
+
+    def _catalogue(self, scopes: frozenset[str]) -> list[tuple[str, str]]:
+        return [
+            (capability.name, capability.description)
+            for capability in self.registry.all()
+            if capability.permitted_for(scopes)
+        ]
+
+    async def _run(
+        self, conn: sqlite3.Connection, request: Request, capability: str, args: dict
+    ) -> Outcome:
+        return await self.registry.invoke(conn, request, capability, args)
+
+    # --- verbs --------------------------------------------------------------------
+
+    async def capture(self, conn: sqlite3.Connection, request: Request) -> Outcome:
+        return await self._run(conn, request, "journal.write", {"text": request.text})
+
+    async def ask(self, conn: sqlite3.Connection, request: Request) -> Outcome:
+        found = await self._run(
+            conn, request, "journal.search", {"query": request.text, "limit": 10}
+        )
+        notes = found.data if isinstance(found.data, list) else []
+
+        if not self.llm.available or not self._budget_left(conn):
+            # Degrade to plain search rather than refusing. Being told what you wrote is worth
+            # more than being told the model is unavailable.
+            if not notes:
+                return Outcome(
+                    output="I could not answer that, and nothing in your notes matches.",
+                    semantic=coreschema.response("Nothing found."),
+                )
+            top = notes[0]["text"]
+            return Outcome(
+                output=found.output,
+                semantic=coreschema.response(top[:200]),
+                data=notes,
+            )
+
+        context = "\n".join(f"- {n['created_at']}: {n['text']}" for n in notes) or "(none)"
+        recent = db.recent_journal(conn, days=14, limit=100)
+        recent_text = "\n".join(f"- {r['created_at']}: {r['text']}" for r in recent) or "(none)"
+
+        try:
+            completion = await self.llm.complete(
+                system=ANSWER_SYSTEM,
+                user=(
+                    f"Notes matching the question:\n{context}\n\n"
+                    f"The user's recent notes:\n{recent_text}\n\n"
+                    f"Question: {request.text}"
+                ),
+                max_tokens=300,
+                timeout=40.0,
+            )
+        except LLMUnavailable as exc:
+            logger.warning("ask degraded: %s", exc)
+            return Outcome(
+                output=found.output or "I could not reach the model.",
+                semantic=coreschema.response("Could not answer just now."),
+                data=notes,
+            )
+
+        answer = completion.text or "I do not know."
+        return Outcome(
+            output=answer,
+            semantic=coreschema.response(answer),
+            data=notes,
+            cost_usd=completion.cost_usd,
+            model=completion.model,
+            tokens_in=completion.tokens_in,
+            tokens_out=completion.tokens_out,
+        )
+
+    async def schedule(self, conn: sqlite3.Connection, request: Request) -> Outcome:
+        """Calendar arrives in P2. Until then the request is kept, not dropped, and the user
+        is told plainly. Losing a spoken commitment would be the worst possible stub."""
+        await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
+        message = "Calendar isn't connected yet. I saved it."
+        return Outcome(output=message, semantic=coreschema.response(message))
+
+    async def do(self, conn: sqlite3.Connection, request: Request) -> Outcome:
+        plan = await self.router.route(request.text, self._catalogue(request.scopes))
+        logger.info("do -> %s (%s)", plan.capability, plan.reason)
+        if not plan.capability:
+            return await self.capture(conn, request)
+        outcome = await self._run(conn, request, plan.capability, plan.args)
+        outcome.data = {"plan": plan.as_dict(), "result": outcome.data}
+        return outcome
+
+    # --- dispatch -----------------------------------------------------------------
+
+    async def call(self, conn: sqlite3.Connection, verb: str, request: Request) -> Outcome:
+        """`request.text` is the single source of truth for what was said. The inlet is
+        responsible for pulling it out of whatever argument name its verb uses."""
+        handler = {
+            "capture": self.capture,
+            "ask": self.ask,
+            "schedule": self.schedule,
+            "do": self.do,
+        }.get(verb)
+        if handler is None:
+            return Outcome(
+                output=f"signet has no tool called {verb}.",
+                semantic=coreschema.generic_failure(
+                    f"No tool called {verb}.", llm_recoverable=False
+                ),
+                is_error=True,
+            )
+
+        started = time.monotonic()
+        request_id = db.start_request(
+            conn,
+            text=request.text,
+            source=request.source,
+            verb=verb,
+            client_id=request.client_id,
+        )
+        request.id = request_id
+        try:
+            outcome = await handler(conn, request)
+        except Exception:
+            logger.exception("verb %s failed", verb)
+            db.finish_request(conn, request_id, status="error", error="unhandled")
+            return Outcome(
+                output="That did not work.",
+                semantic=coreschema.generic_failure("That did not work."),
+                is_error=True,
+            )
+
+        db.finish_request(
+            conn,
+            request_id,
+            status="error" if outcome.is_error else "ok",
+            result={"output": outcome.output, "semantic": outcome.semantic},
+            latency_ms=int((time.monotonic() - started) * 1000),
+            cost_usd=outcome.cost_usd,
+            model=outcome.model,
+            tokens_in=outcome.tokens_in,
+            tokens_out=outcome.tokens_out,
+        )
+        return outcome

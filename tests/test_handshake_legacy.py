@@ -120,7 +120,10 @@ def test_tools_list_is_one_page_with_no_cursor(legacy: LegacyClient):
         'the Kotlin client hits TODO("Handle pagination") and throws on nextCursor'
     )
     names = [t["name"] for t in result["tools"]]
-    assert names == ["capture"]
+    assert names == ["capture", "ask", "schedule", "do"]
+    # A tiny on-device model picks from this list. Research section 5.4: keep it under about
+    # eight tools on principle, and capture first because it is the one that must never fail.
+    assert len(names) <= 8
     schema = result["tools"][0]["inputSchema"]
     assert schema["required"] == ["text"]
 

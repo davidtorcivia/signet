@@ -57,7 +57,7 @@ async def test_modern_client_negotiates_the_modern_era(server: str):
 async def test_modern_client_lists_the_tool(server: str):
     async with connect(server) as client:
         result = await client.list_tools()
-    assert [t.name for t in result.tools] == ["capture"]
+    assert [t.name for t in result.tools] == ["capture", "ask", "schedule", "do"]
 
 
 async def test_modern_client_can_call_capture(server: str, cfg):
