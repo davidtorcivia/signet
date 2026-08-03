@@ -7,6 +7,7 @@ files the words in the journal.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -228,3 +229,52 @@ async def test_calendar_write_needs_its_scope(conn):
         conn, reader, "calendar.create_event", {"summary": "s", "start": "a", "end": "b"}
     )
     assert outcome.is_error
+
+
+def test_times_are_readable_on_a_watch():
+    """The API returns ISO-8601, which is right for the model and unreadable on a wrist."""
+    from datetime import timedelta
+
+    from signet.capabilities.calendar import when
+
+    now = datetime.now().astimezone()
+
+    today = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    assert when(today.isoformat()) == "8pm"
+
+    tomorrow = today + timedelta(days=1)
+    assert when(tomorrow.isoformat()) == "tomorrow 8pm"
+
+    later = (today + timedelta(days=3)).replace(hour=9, minute=30)
+    assert when(later.isoformat()) == f"{later.strftime('%a')} 9:30am"
+
+    # All-day events arrive as a bare date and must not gain an invented time.
+    assert when("2026-08-10") == "Mon 10 Aug"
+    assert "T" not in when("2026-08-10")
+
+    assert when("") == ""
+    assert when("not a date") == "not a date"
+
+
+async def test_list_puts_a_readable_time_on_the_watch(conn, monkeypatch):
+    connect_google(conn)
+    payload = {
+        "items": [
+            {
+                "id": "1",
+                "summary": "Nami Nori Williamsburg",
+                "start": {"dateTime": "2026-08-06T20:00:00-04:00"},
+                "end": {"dateTime": "2026-08-06T22:00:00-04:00"},
+            }
+        ]
+    }
+    patch_calendar(monkeypatch, lambda r: httpx.Response(200, json=payload))
+
+    registry = Registry()
+    registry.discover()
+    outcome = await registry.invoke(conn, ring("what's on"), "calendar.list", {"days": 14})
+
+    assert "2026-08-06T20:00:00" not in outcome.semantic["text"], "raw ISO reached the watch"
+    assert outcome.semantic["text"].startswith("Nami Nori Williamsburg,")
+    # The model still gets the precise timestamp.
+    assert "2026-08-06T20:00:00-04:00" in outcome.output

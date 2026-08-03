@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +19,43 @@ from ..config import load_cached
 from ..envelope import Outcome, Request
 
 logger = logging.getLogger("signet.calendar")
+
+
+def _day(moment: datetime) -> str:
+    # Built by hand rather than with %-d, which is a glibc extension and raises on Windows.
+    return f"{moment.strftime('%a')} {moment.strftime('%d').lstrip('0')} {moment.strftime('%b')}"
+
+
+def _clock(moment: datetime) -> str:
+    hour = moment.strftime("%I").lstrip("0") or "12"
+    minute = moment.strftime("%M")
+    return f"{hour}{'' if minute == '00' else ':' + minute}{moment.strftime('%p').lower()}"
+
+
+def when(iso: str) -> str:
+    """A time a human can read at a glance on a watch.
+
+    The API returns ISO-8601, which is right for the model and useless on a wrist. All-day
+    events arrive as a bare date with no time part, so they render as just the day.
+    """
+    if not iso:
+        return ""
+    try:
+        if len(iso) == 10:  # all-day, e.g. 2026-08-10
+            return _day(datetime.strptime(iso, "%Y-%m-%d"))
+        moment = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+
+    now = datetime.now(moment.tzinfo)
+    days_away = (moment.date() - now.date()).days
+    if days_away == 0:
+        return _clock(moment)
+    if days_away == 1:
+        return f"tomorrow {_clock(moment)}"
+    if 0 < days_away < 7:
+        return f"{moment.strftime('%a')} {_clock(moment)}"
+    return f"{_day(moment)} {_clock(moment)}"
 
 
 class ListArgs(BaseModel):
@@ -84,8 +122,9 @@ async def list_events(request: Request, args: ListArgs) -> Outcome:
     # The watch gets the next thing, because a whole agenda is unreadable on a watch face.
     nxt = events[0]
     return Outcome(
+        # ISO for the model, something glanceable for the wrist.
         output=f"{len(events)} events:\n{listing}",
-        semantic=coreschema.response(f"Next: {nxt.summary} at {nxt.start}"),
+        semantic=coreschema.response(f"{nxt.summary}, {when(nxt.start)}"),
         data=[{"summary": e.summary, "start": e.start, "end": e.end} for e in events],
     )
 
