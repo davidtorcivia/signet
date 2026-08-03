@@ -361,7 +361,14 @@ CONFIGURABLE = {
     "openrouter_api_key": "secret",
     "exa_api_key": "secret",
     "model": "text",
+    "provider": "json",
+    "model_params": "json",
     "daily_cost_cap_usd": "number",
+    "prompt_answer": "prompt",
+    "prompt_router": "prompt",
+    "prompt_schedule": "prompt",
+    "google_client_id": "text",
+    "google_client_secret": "secret",
 }
 
 

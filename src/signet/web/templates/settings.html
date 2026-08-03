@@ -2,6 +2,26 @@
 {% block title %}Settings{% endblock %}
 {% block content %}
 
+{% for e in errors %}<div class="banner">{{ e }}</div>{% endfor %}
+
+<div class="card">
+  <b>Google Calendar</b>
+  <div class="muted" style="margin:.3rem 0 .6rem">
+    {% if google_connected %}
+      Connected. schedule creates real events.
+    {% elif google_ready %}
+      Credentials saved. Connect to grant access.
+    {% else %}
+      Add a Google client ID and secret below, then come back here.
+    {% endif %}
+  </div>
+  {% if google_connected %}
+    <form method="post" action="/app/google/disconnect"><button class="quiet">Disconnect</button></form>
+  {% elif google_ready %}
+    <form method="post" action="/app/google/connect"><button>Connect Google Calendar</button></form>
+  {% endif %}
+</div>
+
 {% if saved %}<div class="card"><b>Saved.</b> It applies to the next request, no restart needed.</div>{% endif %}
 
 <form method="post" action="/app/settings">
@@ -9,7 +29,14 @@
     <div class="card">
       <label for="{{ field.key }}"><b>{{ field.label }}</b></label>
       <div class="muted" style="margin:.2rem 0 .5rem">{{ field.help }}</div>
-      {% if field.kind == 'secret' %}
+      {% if field.kind == 'prompt' %}
+        <textarea id="{{ field.key }}" name="{{ field.key }}" rows="5"
+                  style="width:100%;font:inherit;padding:.6rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">{{ field.value or '' }}</textarea>
+      {% elif field.kind == 'json' %}
+        <textarea id="{{ field.key }}" name="{{ field.key }}" rows="3" spellcheck="false"
+                  class="mono"
+                  style="width:100%;padding:.6rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)">{{ field.value or '' }}</textarea>
+      {% elif field.kind == 'secret' %}
         <input type="password" id="{{ field.key }}" name="{{ field.key }}"
                placeholder="{{ 'set, leave blank to keep' if field.is_set else 'not set' }}"
                autocomplete="new-password">
@@ -17,7 +44,9 @@
         <input type="text" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value or '' }}">
       {% endif %}
       <div class="muted" style="margin-top:.4rem">
-        {% if field.source == 'portal' %}
+        {% if field.source == 'default' %}
+          Using the built-in default.
+        {% elif field.source == 'portal' %}
           Set here.
           <button class="quiet" style="margin-left:.4rem" name="clear" value="{{ field.key }}">Clear</button>
         {% elif field.source == 'env' %}

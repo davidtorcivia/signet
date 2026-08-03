@@ -56,10 +56,18 @@ class LLM:
         *,
         model: str = DEFAULT_MODEL,
         timeout: float = 45.0,
+        provider: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        # OpenRouter's provider routing block: pin providers, set an order, allow or forbid
+        # fallbacks. https://openrouter.ai/docs/features/provider-routing
+        self.provider = provider or {}
+        # Anything else that belongs in the request body, such as temperature or a
+        # reasoning-effort block. Kept opaque so a new upstream knob needs no code change.
+        self.params = params or {}
 
     @property
     def available(self) -> bool:
@@ -87,6 +95,12 @@ class LLM:
             ],
             "max_tokens": max_tokens,
         }
+        if self.provider:
+            body["provider"] = self.provider
+        if self.params:
+            # Merged under the fields signet controls, so a stray "messages" or "model" in
+            # the params blob cannot break the call.
+            body = {**self.params, **body}
         if schema is not None:
             body["response_format"] = {
                 "type": "json_schema",

@@ -74,6 +74,12 @@ DEFAULT_RULES: list[dict[str, Any]] = [
     },
 ]
 
+CLASSIFY_SYSTEM = (
+    "You route a voice request to exactly one tool. Reply with the tool name and its "
+    "arguments. If nothing fits, use journal.write to save the text verbatim. Never invent a "
+    "tool that is not listed."
+)
+
 CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -127,9 +133,12 @@ def apply_rules(text: str, rules: list[dict[str, Any]]) -> Plan | None:
 
 
 class Router:
-    def __init__(self, llm: LLM, rules_path: Path | None = None) -> None:
+    def __init__(
+        self, llm: LLM, rules_path: Path | None = None, system_prompt: str | None = None
+    ) -> None:
         self.llm = llm
         self.rules_path = rules_path
+        self.system_prompt = system_prompt or CLASSIFY_SYSTEM
 
     async def route(self, text: str, catalogue: list[tuple[str, str]]) -> Plan:
         """`catalogue` is [(capability name, description)] the caller is allowed to use."""
@@ -151,11 +160,7 @@ class Router:
         listing = "\n".join(f"- {name}: {description}" for name, description in catalogue)
         try:
             completion = await self.llm.complete(
-                system=(
-                    "You route a voice request to exactly one tool. Reply with the tool name "
-                    "and its arguments. If nothing fits, use journal.write to save the text "
-                    "verbatim. Never invent a tool that is not listed."
-                ),
+                system=self.system_prompt,
                 user=f"Tools:\n{listing}\n\nRequest: {text}",
                 schema=CLASSIFY_SCHEMA,
                 max_tokens=300,

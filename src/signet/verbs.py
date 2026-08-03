@@ -13,14 +13,16 @@ normal path.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 import mcp.types as types
 
-from . import coreschema, db
+from . import coreschema, db, google, prompts
 from .config import Config
 from .envelope import Outcome, Request
 from .llm import LLM, LLMUnavailable
@@ -29,14 +31,20 @@ from .router import Router
 
 logger = logging.getLogger("signet.verbs")
 
-# Answers are read on a watch face. This is a prompt instruction rather than a truncation:
-# a model told to be brief writes a good short answer, while chopping a long one mid-sentence
-# produces nonsense.
-ANSWER_SYSTEM = (
-    "You answer questions for someone reading the reply on a smart watch. "
-    "Answer in one or two short sentences. No preamble, no markdown, no lists. "
-    "If the answer is in the provided notes, use them. If you do not know, say so briefly."
-)
+
+def _json_setting(conn: sqlite3.Connection, key: str) -> dict:
+    """A JSON blob from the portal. Invalid JSON is refused at save time, so reaching here
+    with something unparseable means the database was edited by hand."""
+    raw = db.get_config(conn, key)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("%s is not valid JSON, ignoring it", key)
+        return {}
+    return value if isinstance(value, dict) else {}
+
 
 INSTRUCTIONS = (
     "signet is the user's own server. It remembers what they say and can answer from it. "
@@ -88,6 +96,20 @@ TOOLS = [
 
 ARG_NAMES = {"capture": "text", "ask": "question", "schedule": "request", "do": "request"}
 
+# What the model must return to turn speech into an event. Strict, so a vague answer fails
+# loudly here rather than producing an event at the wrong time.
+EVENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "start": {"type": "string", "description": "ISO-8601 with UTC offset"},
+        "end": {"type": "string", "description": "ISO-8601 with UTC offset"},
+        "location": {"type": ["string", "null"]},
+    },
+    "required": ["summary", "start", "end", "location"],
+    "additionalProperties": False,
+}
+
 
 @dataclass
 class Verbs:
@@ -111,9 +133,16 @@ class Verbs:
         """
         key = self._setting(conn, "openrouter_api_key", self.cfg.openrouter_api_key)
         model = self._setting(conn, "model", self.cfg.model) or self.cfg.model
-        if key == self.cfg.openrouter_api_key and model == self.cfg.model:
+        provider = _json_setting(conn, "provider")
+        params = _json_setting(conn, "model_params")
+        if (
+            key == self.cfg.openrouter_api_key
+            and model == self.cfg.model
+            and not provider
+            and not params
+        ):
             return self.llm
-        return LLM(key, model=model)
+        return LLM(key, model=model, provider=provider, params=params)
 
     def _cap(self, conn: sqlite3.Connection) -> float:
         raw = self._setting(conn, "daily_cost_cap_usd", None)
@@ -195,7 +224,7 @@ class Verbs:
 
         try:
             completion = await llm.complete(
-                system=ANSWER_SYSTEM,
+                system=prompts.get(conn, "prompt_answer"),
                 user=(
                     f"Notes matching the question:\n{context}\n\n"
                     f"The user's recent notes:\n{recent_text}"
@@ -225,14 +254,71 @@ class Verbs:
         )
 
     async def schedule(self, conn: sqlite3.Connection, request: Request) -> Outcome:
-        """Calendar arrives in P2. Until then the request is kept, not dropped, and the user
-        is told plainly. Losing a spoken commitment would be the worst possible stub."""
-        await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
-        message = "Calendar isn't connected yet. I saved it."
-        return Outcome(output=message, semantic=coreschema.response(message))
+        """Speech to a real calendar event.
+
+        Falls back to the journal at every step where it cannot finish, because a spoken
+        commitment that vanishes is worse than one filed in the wrong place.
+        """
+        llm = self._llm_for(conn)
+        if not google.connected(conn) or not llm.available or not self._budget_left(conn):
+            await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
+            message = (
+                "Calendar isn't connected. I saved it."
+                if not google.connected(conn)
+                else "I couldn't work out the time. I saved it."
+            )
+            return Outcome(output=message, semantic=coreschema.response(message))
+
+        now = datetime.now().astimezone()
+        try:
+            completion = await llm.complete(
+                system=prompts.get(conn, "prompt_schedule"),
+                user="\n".join(
+                    [
+                        f"Now: {now.isoformat()}",
+                        f"Timezone offset: {now.strftime('%z')}",
+                        "",
+                        f"Request: {request.text}",
+                    ]
+                ),
+                schema=EVENT_SCHEMA,
+                max_tokens=300,
+                timeout=30.0,
+            )
+        except LLMUnavailable:
+            await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
+            message = "I couldn't reach the model. I saved it."
+            return Outcome(output=message, semantic=coreschema.response(message))
+
+        parsed = completion.data or {}
+        if not parsed.get("summary") or not parsed.get("start") or not parsed.get("end"):
+            await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
+            message = "I couldn't work out the time. I saved it."
+            return Outcome(output=message, semantic=coreschema.response(message))
+
+        outcome = await self._run(
+            conn,
+            request,
+            "calendar.create_event",
+            {
+                "summary": parsed["summary"],
+                "start": parsed["start"],
+                "end": parsed["end"],
+                "location": parsed.get("location"),
+            },
+        )
+        if outcome.is_error:
+            # The calendar refused. Keep the words rather than lose them.
+            await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
+        outcome.cost_usd += completion.cost_usd
+        outcome.model = completion.model
+        outcome.tokens_in = completion.tokens_in
+        outcome.tokens_out = completion.tokens_out
+        return outcome
 
     async def do(self, conn: sqlite3.Connection, request: Request) -> Outcome:
         router = Router(self._llm_for(conn), rules_path=self.router.rules_path)
+        router.system_prompt = prompts.get(conn, "prompt_router")
         plan = await router.route(request.text, self._catalogue(request.scopes))
         logger.info("do -> %s (%s)", plan.capability, plan.reason)
         if not plan.capability:

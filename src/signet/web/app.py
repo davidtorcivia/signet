@@ -29,7 +29,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from .. import db
+from .. import db, google, prompts
 from ..config import Config
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -257,6 +257,58 @@ SETTINGS_FIELDS = [
         "env": "model",
     },
     {
+        "key": "provider",
+        "label": "Provider routing (JSON)",
+        "kind": "json",
+        "help": 'OpenRouter provider preferences, e.g. {"order": ["DeepSeek"], '
+        '"allow_fallbacks": false}. Blank means let OpenRouter choose.',
+        "env": None,
+    },
+    {
+        "key": "model_params",
+        "label": "Model parameters (JSON)",
+        "kind": "json",
+        "help": 'Merged into the request body, e.g. {"temperature": 0.2} or '
+        '{"reasoning": {"effort": "high"}}.',
+        "env": None,
+    },
+    {
+        "key": "prompt_answer",
+        "label": "Answer prompt",
+        "kind": "prompt",
+        "help": "Voice and tone for answers. These are read on a watch, so keep the brevity "
+        "instruction unless you want long replies.",
+        "env": None,
+    },
+    {
+        "key": "prompt_router",
+        "label": "Routing prompt",
+        "kind": "prompt",
+        "help": "How a request is matched to a tool.",
+        "env": None,
+    },
+    {
+        "key": "prompt_schedule",
+        "label": "Scheduling prompt",
+        "kind": "prompt",
+        "help": "How spoken times become calendar events.",
+        "env": None,
+    },
+    {
+        "key": "google_client_id",
+        "label": "Google client ID",
+        "kind": "text",
+        "help": "From a Google Cloud OAuth client of type Web application.",
+        "env": None,
+    },
+    {
+        "key": "google_client_secret",
+        "label": "Google client secret",
+        "kind": "secret",
+        "help": "Stored server side and never shown again.",
+        "env": None,
+    },
+    {
         "key": "daily_cost_cap_usd",
         "label": "Daily spend cap, dollars",
         "kind": "number",
@@ -275,13 +327,15 @@ async def settings_page(request: Request) -> Response:
         fields = []
         for spec in SETTINGS_FIELDS:
             stored = db.get_config(conn, spec["key"])
-            from_env = getattr(cfg, spec["env"], None)
+            from_env = getattr(cfg, spec["env"], None) if spec["env"] else None
             if stored:
                 source, value = "portal", stored
             elif from_env:
                 source, value = "env", from_env
             else:
                 source, value = "unset", None
+            if not value and spec["kind"] == "prompt":
+                value, source = prompts.DEFAULTS.get(spec["key"], ""), "default"
             fields.append(
                 {
                     **spec,
@@ -294,13 +348,30 @@ async def settings_page(request: Request) -> Response:
     finally:
         conn.close()
     saved = request.session.pop("settings_saved", False)
-    return _render(request, "settings.html", page="settings", fields=fields, saved=saved)
+    errors = request.session.pop("settings_errors", [])
+    conn = _conn(request)
+    try:
+        google_ready = bool(db.get_config(conn, "google_client_id"))
+        google_connected = google.connected(conn)
+    finally:
+        conn.close()
+    return _render(
+        request,
+        "settings.html",
+        page="settings",
+        fields=fields,
+        saved=saved,
+        errors=errors,
+        google_ready=google_ready,
+        google_connected=google_connected,
+    )
 
 
 async def save_settings(request: Request) -> Response:
     if not _authed(request):
         return RedirectResponse("/app/login", status_code=303)
     form = await request.form()
+    errors: list[str] = []
     conn = _conn(request)
     try:
         clearing = str(form.get("clear") or "")
@@ -316,12 +387,95 @@ async def save_settings(request: Request) -> Response:
                     try:
                         float(submitted)
                     except ValueError:
+                        errors.append(f"{spec['label']}: not a number")
                         continue
+                if spec["kind"] == "json" and submitted:
+                    try:
+                        parsed = json.loads(submitted)
+                    except json.JSONDecodeError as exc:
+                        errors.append(f"{spec['label']}: invalid JSON, {exc.msg}")
+                        continue
+                    if not isinstance(parsed, dict):
+                        errors.append(f"{spec['label']}: must be a JSON object")
+                        continue
+                if spec["kind"] == "prompt" and submitted == prompts.DEFAULTS.get(spec["key"]):
+                    # Unchanged from the default, so store nothing and keep following it.
+                    db.clear_config(conn, spec["key"])
+                    continue
                 if submitted:
                     db.set_config(conn, spec["key"], submitted)
     finally:
         conn.close()
     request.session["settings_saved"] = True
+    request.session["settings_errors"] = errors
+    return RedirectResponse("/app/settings", status_code=303)
+
+
+def _redirect_uri(request: Request) -> str:
+    """Must match a redirect URI registered on the Google OAuth client exactly."""
+    return str(request.url_for("google_callback"))
+
+
+async def google_connect(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        client_id = db.get_config(conn, "google_client_id")
+    finally:
+        conn.close()
+    if not client_id:
+        request.session["settings_errors"] = ["Set a Google client ID first."]
+        return RedirectResponse("/app/settings", status_code=303)
+
+    # CSRF: the state is generated here, kept in the session, and compared on return.
+    state = secrets.token_urlsafe(24)
+    request.session["google_state"] = state
+    return RedirectResponse(
+        google.authorize_url(client_id, _redirect_uri(request), state), status_code=303
+    )
+
+
+async def google_callback(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+
+    expected = request.session.pop("google_state", None)
+    supplied = request.query_params.get("state")
+    if not expected or supplied != expected:
+        request.session["settings_errors"] = ["Google sign-in did not match. Try again."]
+        return RedirectResponse("/app/settings", status_code=303)
+
+    code = request.query_params.get("code")
+    if not code:
+        reason = request.query_params.get("error", "no code returned")
+        request.session["settings_errors"] = [f"Google sign-in failed: {reason}"]
+        return RedirectResponse("/app/settings", status_code=303)
+
+    conn = _conn(request)
+    try:
+        client_id = db.get_config(conn, "google_client_id") or ""
+        client_secret = db.get_config(conn, "google_client_secret") or ""
+        try:
+            await google.exchange_code(conn, client_id, client_secret, code, _redirect_uri(request))
+        except google.GoogleUnavailable as exc:
+            request.session["settings_errors"] = [str(exc)]
+            return RedirectResponse("/app/settings", status_code=303)
+    finally:
+        conn.close()
+
+    request.session["settings_saved"] = True
+    return RedirectResponse("/app/settings", status_code=303)
+
+
+async def google_disconnect(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        google.disconnect(conn)
+    finally:
+        conn.close()
     return RedirectResponse("/app/settings", status_code=303)
 
 
@@ -364,6 +518,9 @@ def build(cfg: Config) -> Starlette | None:
         Route("/tokens/{token_id:int}/revoke", revoke_token, methods=["POST"]),
         Route("/settings", settings_page, methods=["GET"]),
         Route("/settings", save_settings, methods=["POST"]),
+        Route("/google/connect", google_connect, methods=["POST"]),
+        Route("/google/callback", google_callback, methods=["GET"], name="google_callback"),
+        Route("/google/disconnect", google_disconnect, methods=["POST"]),
         Route("/kill", toggle_kill, methods=["POST"]),
         Route("/static/htmx.min.js", htmx_js),
     ]
