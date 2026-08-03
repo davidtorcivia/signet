@@ -343,3 +343,39 @@ def spend_today(conn: sqlite3.Connection) -> float:
         "WHERE received_at >= strftime('%Y-%m-%dT00:00:00Z', 'now')"
     ).fetchone()
     return float(row["total"])
+
+
+# --- runtime configuration ------------------------------------------------------------
+#
+# Settings the admin portal can change without a redeploy. A value here wins over the
+# environment, so `.env` is the bootstrap and the portal is the day-to-day control. Stored
+# in the same SQLite file as everything else: it sits next to `.env` on the same disk with
+# the same permissions, so encrypting it here would move the problem rather than solve it.
+
+CONFIG_PREFIX = "config:"
+
+# Only these may be set from the portal. SIGNET_TOKEN and SIGNET_ADMIN_PASSWORD are
+# deliberately absent: locking yourself out of your own server through a web form is a bad
+# afternoon, and the bearer token has its own managed lifecycle in the tokens table.
+CONFIGURABLE = {
+    "openrouter_api_key": "secret",
+    "exa_api_key": "secret",
+    "model": "text",
+    "daily_cost_cap_usd": "number",
+}
+
+
+def get_config(conn: sqlite3.Connection, key: str) -> str | None:
+    value = get_setting(conn, CONFIG_PREFIX + key, "")
+    return value or None
+
+
+def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
+    if key not in CONFIGURABLE:
+        raise ValueError(f"{key} is not settable at runtime")
+    set_setting(conn, CONFIG_PREFIX + key, value)
+
+
+def clear_config(conn: sqlite3.Connection, key: str) -> None:
+    """Drop the override so the environment value applies again."""
+    set_setting(conn, CONFIG_PREFIX + key, "")

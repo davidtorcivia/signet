@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from .. import coreschema
 from ..capability import Capability
-from ..config import load_cached
+from ..config import effective, load_cached
 from ..envelope import Outcome, Request
 from ..search import Exa, SearchUnavailable
 
@@ -23,7 +23,8 @@ class WebSearchArgs(BaseModel):
 
 async def web_search(request: Request, args: WebSearchArgs) -> Outcome:
     cfg = load_cached()
-    exa = Exa(cfg.exa_api_key)
+    # Resolved per call so a key set in the admin portal works immediately.
+    exa = Exa(effective("exa_api_key", cfg.exa_api_key))
 
     if not exa.available:
         return Outcome(

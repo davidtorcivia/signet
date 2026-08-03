@@ -234,6 +234,97 @@ async def revoke_token(request: Request) -> Response:
     return RedirectResponse("/app/tokens", status_code=303)
 
 
+SETTINGS_FIELDS = [
+    {
+        "key": "openrouter_api_key",
+        "label": "OpenRouter API key",
+        "kind": "secret",
+        "help": "Without it, ask falls back to plain search of your journal.",
+        "env": "openrouter_api_key",
+    },
+    {
+        "key": "exa_api_key",
+        "label": "Exa API key",
+        "kind": "secret",
+        "help": "Web search. Without it, ask answers from your journal only.",
+        "env": "exa_api_key",
+    },
+    {
+        "key": "model",
+        "label": "Model",
+        "kind": "text",
+        "help": "Any OpenRouter model id.",
+        "env": "model",
+    },
+    {
+        "key": "daily_cost_cap_usd",
+        "label": "Daily spend cap, dollars",
+        "kind": "number",
+        "help": "A runaway-loop breaker, not an economy measure. Capture is never affected.",
+        "env": "daily_cost_cap_usd",
+    },
+]
+
+
+async def settings_page(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    cfg: Config = request.app.state.cfg
+    conn = _conn(request)
+    try:
+        fields = []
+        for spec in SETTINGS_FIELDS:
+            stored = db.get_config(conn, spec["key"])
+            from_env = getattr(cfg, spec["env"], None)
+            if stored:
+                source, value = "portal", stored
+            elif from_env:
+                source, value = "env", from_env
+            else:
+                source, value = "unset", None
+            fields.append(
+                {
+                    **spec,
+                    # Secrets are never sent to the browser, only whether one exists.
+                    "value": None if spec["kind"] == "secret" else value,
+                    "is_set": bool(value),
+                    "source": source,
+                }
+            )
+    finally:
+        conn.close()
+    saved = request.session.pop("settings_saved", False)
+    return _render(request, "settings.html", page="settings", fields=fields, saved=saved)
+
+
+async def save_settings(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    conn = _conn(request)
+    try:
+        clearing = str(form.get("clear") or "")
+        if clearing in db.CONFIGURABLE:
+            db.clear_config(conn, clearing)
+        else:
+            for spec in SETTINGS_FIELDS:
+                submitted = str(form.get(spec["key"], "")).strip()
+                if spec["kind"] == "secret" and not submitted:
+                    # Blank means "leave it alone", since the current value is never shown.
+                    continue
+                if spec["kind"] == "number" and submitted:
+                    try:
+                        float(submitted)
+                    except ValueError:
+                        continue
+                if submitted:
+                    db.set_config(conn, spec["key"], submitted)
+    finally:
+        conn.close()
+    request.session["settings_saved"] = True
+    return RedirectResponse("/app/settings", status_code=303)
+
+
 async def toggle_kill(request: Request) -> Response:
     if not _authed(request):
         return RedirectResponse("/app/login", status_code=303)
@@ -271,6 +362,8 @@ def build(cfg: Config) -> Starlette | None:
         Route("/tokens", tokens, methods=["GET"]),
         Route("/tokens", create_token, methods=["POST"]),
         Route("/tokens/{token_id:int}/revoke", revoke_token, methods=["POST"]),
+        Route("/settings", settings_page, methods=["GET"]),
+        Route("/settings", save_settings, methods=["POST"]),
         Route("/kill", toggle_kill, methods=["POST"]),
         Route("/static/htmx.min.js", htmx_js),
     ]

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+
+{% if saved %}<div class="card"><b>Saved.</b> It applies to the next request, no restart needed.</div>{% endif %}
+
+<form method="post" action="/app/settings">
+  {% for field in fields %}
+    <div class="card">
+      <label for="{{ field.key }}"><b>{{ field.label }}</b></label>
+      <div class="muted" style="margin:.2rem 0 .5rem">{{ field.help }}</div>
+      {% if field.kind == 'secret' %}
+        <input type="password" id="{{ field.key }}" name="{{ field.key }}"
+               placeholder="{{ 'set, leave blank to keep' if field.is_set else 'not set' }}"
+               autocomplete="new-password">
+      {% else %}
+        <input type="text" id="{{ field.key }}" name="{{ field.key }}" value="{{ field.value or '' }}">
+      {% endif %}
+      <div class="muted" style="margin-top:.4rem">
+        {% if field.source == 'portal' %}
+          Set here.
+          <button class="quiet" style="margin-left:.4rem" name="clear" value="{{ field.key }}">Clear</button>
+        {% elif field.source == 'env' %}
+          From the environment.
+        {% else %}
+          Not set.
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  <button style="width:100%">Save</button>
+</form>
+
+<div class="card muted" style="margin-top:1rem">
+  Values set here are stored in signet's database and win over the environment. The bearer
+  token and this password stay in <span class="mono">.env</span> on the server, so a mistake
+  here cannot lock you out.
+</div>
+{% endblock %}

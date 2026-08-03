@@ -210,3 +210,34 @@ async def test_every_verb_returns_something_the_watch_can_render(cfg, conn):
     ):
         outcome = await verbs.call(conn, verb, ring_request(text))
         assert outcome.semantic.get("type"), f"{verb} returned nothing renderable"
+
+
+async def test_portal_settings_override_the_environment(cfg, conn):
+    """A key set in the admin portal applies on the next request, with no restart. That is
+    the point of storing it in the database rather than only in .env."""
+    verbs = build(cfg, LLM(api_key=None))
+
+    assert verbs._web_available(conn) is False
+    db.set_config(conn, "exa_api_key", "set-from-the-portal")
+    assert verbs._web_available(conn) is True
+
+    assert verbs._llm_for(conn).available is False
+    db.set_config(conn, "openrouter_api_key", "set-from-the-portal")
+    resolved = verbs._llm_for(conn)
+    assert resolved.available is True
+    assert resolved.model == cfg.model
+
+    db.set_config(conn, "model", "another/model")
+    assert verbs._llm_for(conn).model == "another/model"
+
+
+async def test_portal_cost_cap_overrides_the_environment(cfg, conn):
+    verbs = build(cfg, FakeLLM())
+    request_id = db.start_request(conn, text="x", source="api")
+    db.finish_request(conn, request_id, status="ok", cost_usd=3.0)
+
+    # Env cap is 2.00, so the budget is already spent.
+    assert verbs._budget_left(conn) is False
+
+    db.set_config(conn, "daily_cost_cap_usd", "10.00")
+    assert verbs._budget_left(conn) is True

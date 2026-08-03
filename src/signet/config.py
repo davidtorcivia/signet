@@ -122,3 +122,19 @@ def load_or_exit() -> Config:
     except ConfigError as exc:
         print(f"signet: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+
+
+def effective(key: str, fallback: str | None = None) -> str | None:
+    """Resolve a setting the portal may have overridden.
+
+    Precedence is portal, then environment. Read per call rather than cached, so changing a
+    key in the portal takes effect on the next request instead of the next restart.
+    """
+    from . import db
+
+    cfg = load_cached()
+    conn = db.connect(cfg.db_path)
+    try:
+        return db.get_config(conn, key) or fallback
+    finally:
+        conn.close()

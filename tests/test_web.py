@@ -183,3 +183,76 @@ async def test_htmx_is_served_locally(client: httpx.AsyncClient):
     response = await client.get("/static/htmx.min.js")
     assert response.status_code == 200
     assert len(response.text) > 1000
+
+
+async def test_settings_requires_a_session(client: httpx.AsyncClient):
+    assert (await client.get("/settings")).status_code == 303
+    assert (await client.post("/settings", data={"model": "x"})).status_code == 303
+
+
+async def test_secrets_are_never_sent_to_the_browser(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "exa_api_key", "exa-super-secret-value")
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+    assert "exa-super-secret-value" not in body
+    assert "set, leave blank to keep" in body
+
+
+async def test_saving_a_setting_takes_effect(client: httpx.AsyncClient, cfg):
+    await sign_in(client)
+    await client.post("/settings", data={"exa_api_key": "new-key", "model": "some/model"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "exa_api_key") == "new-key"
+    assert db.get_config(conn, "model") == "some/model"
+    conn.close()
+
+
+async def test_blank_secret_keeps_the_existing_value(client: httpx.AsyncClient, cfg):
+    """The field is never prefilled, so an empty box means "unchanged", not "erase"."""
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "exa_api_key", "keep-me")
+    conn.close()
+
+    await sign_in(client)
+    await client.post("/settings", data={"exa_api_key": "", "model": "m"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "exa_api_key") == "keep-me"
+    conn.close()
+
+
+async def test_clearing_falls_back_to_the_environment(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "model", "override/model")
+    conn.close()
+
+    await sign_in(client)
+    await client.post("/settings", data={"clear": "model"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "model") is None
+    conn.close()
+
+
+async def test_rubbish_number_is_ignored(client: httpx.AsyncClient, cfg):
+    await sign_in(client)
+    await client.post("/settings", data={"daily_cost_cap_usd": "banana"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "daily_cost_cap_usd") is None
+    conn.close()
+
+
+async def test_only_allowlisted_keys_are_settable(cfg):
+    """The bearer token and admin password stay in .env. Locking yourself out of your own
+    server through a web form would be a bad afternoon."""
+    conn = db.connect(cfg.db_path)
+    with pytest.raises(ValueError):
+        db.set_config(conn, "admin_password", "hunter2")
+    with pytest.raises(ValueError):
+        db.set_config(conn, "token", "anything")
+    conn.close()

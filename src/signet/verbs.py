@@ -98,15 +98,42 @@ class Verbs:
 
     # --- helpers ------------------------------------------------------------------
 
+    def _setting(self, conn: sqlite3.Connection, key: str, fallback: str | None) -> str | None:
+        """Portal value wins over environment, read per call so a change in the portal takes
+        effect on the next request rather than the next restart."""
+        return db.get_config(conn, key) or fallback
+
+    def _llm_for(self, conn: sqlite3.Connection) -> LLM:
+        """The client to use right now, honouring anything set in the portal.
+
+        Reuses the instance built at startup when nothing has been overridden. That keeps the
+        common path allocation-free, and it means an injected client stays in effect.
+        """
+        key = self._setting(conn, "openrouter_api_key", self.cfg.openrouter_api_key)
+        model = self._setting(conn, "model", self.cfg.model) or self.cfg.model
+        if key == self.cfg.openrouter_api_key and model == self.cfg.model:
+            return self.llm
+        return LLM(key, model=model)
+
+    def _cap(self, conn: sqlite3.Connection) -> float:
+        raw = self._setting(conn, "daily_cost_cap_usd", None)
+        if raw:
+            try:
+                return float(raw)
+            except ValueError:
+                logger.warning("daily_cost_cap_usd %r is not a number, using the env value", raw)
+        return self.cfg.daily_cost_cap_usd
+
     def _budget_left(self, conn: sqlite3.Connection) -> bool:
         """The runaway-loop breaker. Capture never consults this: it costs nothing and must
         never fail."""
-        if self.cfg.daily_cost_cap_usd <= 0:
+        cap = self._cap(conn)
+        if cap <= 0:
             return True
-        return db.spend_today(conn) < self.cfg.daily_cost_cap_usd
+        return db.spend_today(conn) < cap
 
-    def _web_available(self) -> bool:
-        return bool(self.cfg.exa_api_key)
+    def _web_available(self, conn: sqlite3.Connection) -> bool:
+        return bool(self._setting(conn, "exa_api_key", self.cfg.exa_api_key))
 
     def _catalogue(self, scopes: frozenset[str]) -> list[tuple[str, str]]:
         return [
@@ -131,7 +158,8 @@ class Verbs:
         )
         notes = found.data if isinstance(found.data, list) else []
 
-        if not self.llm.available or not self._budget_left(conn):
+        llm = self._llm_for(conn)
+        if not llm.available or not self._budget_left(conn):
             # Degrade to plain search rather than refusing. Being told what you wrote is worth
             # more than being told the model is unavailable.
             if not notes:
@@ -155,7 +183,7 @@ class Verbs:
         web_block = ""
         web_cost = 0.0
         sources: list[dict] = []
-        if not notes and self._web_available():
+        if not notes and self._web_available(conn):
             found_web = await self._run(
                 conn, request, "search.web", {"query": request.text, "results": 5}
             )
@@ -166,7 +194,7 @@ class Verbs:
                 sources = (found_web.data or {}).get("results", [])
 
         try:
-            completion = await self.llm.complete(
+            completion = await llm.complete(
                 system=ANSWER_SYSTEM,
                 user=(
                     f"Notes matching the question:\n{context}\n\n"
@@ -204,7 +232,8 @@ class Verbs:
         return Outcome(output=message, semantic=coreschema.response(message))
 
     async def do(self, conn: sqlite3.Connection, request: Request) -> Outcome:
-        plan = await self.router.route(request.text, self._catalogue(request.scopes))
+        router = Router(self._llm_for(conn), rules_path=self.router.rules_path)
+        plan = await router.route(request.text, self._catalogue(request.scopes))
         logger.info("do -> %s (%s)", plan.capability, plan.reason)
         if not plan.capability:
             return await self.capture(conn, request)
