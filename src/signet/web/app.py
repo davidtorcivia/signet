@@ -416,6 +416,14 @@ SETTINGS_FIELDS = [
         "env": None,
     },
     {
+        "key": "public_url",
+        "label": "Public URL",
+        "kind": "text",
+        "help": "How the outside world reaches signet, for example "
+        "https://signet.example.com. Only used to build the Google redirect URI.",
+        "env": "public_url",
+    },
+    {
         "key": "google_client_id",
         "label": "Google client ID",
         "kind": "text",
@@ -496,6 +504,7 @@ async def settings_page(request: Request) -> Response:
         errors=errors,
         google_ready=google_ready,
         google_connected=google_connected,
+        redirect_uri=_redirect_uri(request),
         models=models,
         model_ids={m.id for m in models},
         current_model=current_model,
@@ -568,9 +577,39 @@ async def save_settings(request: Request) -> Response:
     return RedirectResponse("/app/settings", status_code=303)
 
 
+CALLBACK_PATH = "/app/google/callback"
+
+
+def _public_base(request: Request) -> str:
+    """Where the outside world reaches signet.
+
+    A configured value wins, because deriving this is genuinely ambiguous here: the Cloudflare
+    Tunnel terminates TLS and forwards plain HTTP to the origin, so the request arrives looking
+    like http even though the browser used https. Google requires https and an exact match, so
+    a derived http URI fails with redirect_uri_mismatch.
+    """
+    conn = _conn(request)
+    try:
+        configured = db.get_config(conn, "public_url")
+    finally:
+        conn.close()
+    configured = configured or request.app.state.cfg.public_url
+    if configured:
+        return configured.rstrip("/")
+
+    host = request.headers.get("host", request.url.netloc)
+    forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    scheme = forwarded or request.url.scheme
+    # Anything not on localhost is reached over TLS in practice, and Google will not accept a
+    # plain-http redirect for a real hostname anyway.
+    if scheme != "https" and not host.startswith(("localhost", "127.0.0.1")):
+        scheme = "https"
+    return f"{scheme}://{host}"
+
+
 def _redirect_uri(request: Request) -> str:
     """Must match a redirect URI registered on the Google OAuth client exactly."""
-    return str(request.url_for("google_callback"))
+    return _public_base(request) + CALLBACK_PATH
 
 
 async def google_connect(request: Request) -> Response:

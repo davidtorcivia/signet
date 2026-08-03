@@ -471,3 +471,60 @@ async def test_journal_mutations_require_a_session(client: httpx.AsyncClient, cf
     conn = db.connect(cfg.db_path)
     assert db.get_journal(conn, entry_id)["text"] == "protected"
     conn.close()
+
+
+async def test_redirect_uri_is_https_behind_the_tunnel(client: httpx.AsyncClient, cfg):
+    """The tunnel terminates TLS and forwards plain HTTP, so the request arrives looking like
+    http even though the browser used https. Google rejects a plain-http redirect for a real
+    hostname, so this must not follow the request scheme blindly."""
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "google_client_id", "cid")
+    conn.close()
+
+    await sign_in(client)
+    response = await client.post(
+        "/google/connect", headers={"host": "signet.example.com", "x-forwarded-proto": "https"}
+    )
+    location = response.headers["location"]
+    assert "redirect_uri=https%3A%2F%2Fsignet.example.com%2Fapp%2Fgoogle%2Fcallback" in location
+
+
+async def test_redirect_uri_upgrades_a_plain_http_request(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "google_client_id", "cid")
+    conn.close()
+
+    await sign_in(client)
+    response = await client.post("/google/connect", headers={"host": "signet.example.com"})
+    assert "redirect_uri=https%3A%2F%2Fsignet.example.com" in response.headers["location"]
+
+
+async def test_configured_public_url_wins(client: httpx.AsyncClient, cfg):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "google_client_id", "cid")
+    db.set_config(conn, "public_url", "https://ring.example.org/")
+    conn.close()
+
+    await sign_in(client)
+    response = await client.post("/google/connect", headers={"host": "wrong.example.com"})
+    assert (
+        "redirect_uri=https%3A%2F%2Fring.example.org%2Fapp%2Fgoogle%2Fcallback"
+        in (response.headers["location"])
+    )
+
+
+async def test_settings_shows_the_exact_redirect_uri(client: httpx.AsyncClient, cfg):
+    """There is nothing to guess: the page prints what Google must be told."""
+    await sign_in(client)
+    body = (await client.get("/settings", headers={"host": "signet.example.com"})).text
+    assert "https://signet.example.com/app/google/callback" in body
+
+
+async def test_callback_path_matches_the_registered_route(cfg):
+    """A drifted route would produce a URI Google accepts and signet 404s on."""
+    from signet.web.app import CALLBACK_PATH, build
+
+    portal = build(cfg)
+    paths = {getattr(r, "path", None) for r in portal.routes}
+    assert CALLBACK_PATH == "/app" + "/google/callback"
+    assert "/google/callback" in paths

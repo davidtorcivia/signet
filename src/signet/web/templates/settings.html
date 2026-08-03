@@ -8,6 +8,12 @@
 
 <h2 class="section">Google Calendar</h2>
 <div class="panel">
+  <div class="label">Redirect URI to register with Google</div>
+  <pre>{{ redirect_uri }}</pre>
+  <div class="muted" style="margin:.4rem 0 .8rem">
+    Paste this into your Google OAuth client, character for character. If it looks wrong, set
+    the public URL below.
+  </div>
   <div class="row between">
     <span>
       {% if google_connected %}Connected. schedule creates real events.

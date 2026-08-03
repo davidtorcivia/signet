@@ -449,6 +449,7 @@ CONFIGURABLE = {
     "prompt_answer": "prompt",
     "prompt_router": "prompt",
     "prompt_schedule": "prompt",
+    "public_url": "text",
     "google_client_id": "text",
     "google_client_secret": "secret",
 }

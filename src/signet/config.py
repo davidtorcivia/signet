@@ -25,6 +25,7 @@ class Config:
     model: str = "deepseek/deepseek-v4-flash-0731"
     daily_cost_cap_usd: float = 2.0
     exa_api_key: str | None = None
+    public_url: str | None = None
     admin_password: str | None = None
     session_secret: str = ""
 
@@ -92,6 +93,9 @@ def load(env: dict[str, str] | None = None) -> Config:
         # tunnel, so an unauthenticated admin panel is not an acceptable default.
         # Optional. Without it signet answers from the journal only.
         exa_api_key=(src.get("EXA_API_KEY") or "").strip() or None,
+        # The address the outside world reaches signet on. Only needed for OAuth, where the
+        # redirect URI must match what is registered with Google character for character.
+        public_url=(src.get("SIGNET_PUBLIC_URL") or "").strip().rstrip("/") or None,
         admin_password=(src.get("SIGNET_ADMIN_PASSWORD") or "").strip() or None,
         # Derived from the bearer token so sessions survive a restart without another
         # secret to manage. Distinct from the token itself so one cannot be used as the other.
