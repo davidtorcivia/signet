@@ -312,3 +312,83 @@ async def test_marker_never_leaks_to_the_watch(cfg, conn):
 
     assert "NEED_SEARCH" not in outcome.semantic["text"]
     assert "don't know" in outcome.semantic["text"]
+
+
+async def test_time_sensitive_questions_skip_the_stale_local_attempt(cfg, conn, monkeypatch):
+    """Asked for the current MCP spec version, the model answered confidently from a year-old
+    training set instead of asking to search. A wrong answer costs more than the search, so
+    freshness is decided by rule rather than by trusting the model to own up."""
+    import httpx
+
+    from signet.capabilities import web as web_cap
+    from signet.search import Exa
+
+    payload = {
+        "results": [
+            {"title": "Spec", "url": "https://x", "text": "The current version is 2026-07-28."}
+        ],
+        "costDollars": {"total": 0.007},
+    }
+    monkeypatch.setattr(
+        web_cap,
+        "Exa",
+        lambda key: Exa(
+            key, transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload))
+        ),
+    )
+    db.set_config(conn, "exa_api_key", "key")
+
+    # One reply only: if the local attempt ran, the assertion on call count catches it.
+    llm = ScriptedLLM("The current version is 2026-07-28.")
+    verbs = build(cfg, llm)
+    outcome = await verbs.call(conn, "ask", ring_request("what is the current spec version?"))
+
+    assert llm.calls == 1, "should go straight to search, not ask the model twice"
+    assert "2026-07-28" in outcome.semantic["text"]
+    assert outcome.data["sources"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is the current version of the spec",
+        "what is the latest release",
+        "what is the weather today",
+        "who won the match",
+        "what is the price of silver",
+        "what happened in the news this week",
+    ],
+)
+def test_freshness_markers_are_recognised(question: str):
+    from signet.verbs import looks_time_sensitive
+
+    assert looks_time_sensitive(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what happened to the enlarger",
+        "how do I mix ID-11",
+        "what did I say about the scanner",
+        "remind me what the shutter problem was",
+    ],
+)
+def test_personal_questions_are_not_treated_as_time_sensitive(question: str):
+    from signet.verbs import looks_time_sensitive
+
+    assert not looks_time_sensitive(question)
+
+
+async def test_notes_win_over_freshness_markers(cfg, conn):
+    """If the journal has matching notes, answer from them. The user's own record of the
+    current state of their own things beats a web search."""
+    llm = ScriptedLLM("You booked it for Thursday.")
+    verbs = build(cfg, llm)
+    db.set_config(conn, "exa_api_key", "key")
+    await verbs.call(conn, "capture", ring_request("booked the darkroom for Thursday evening"))
+
+    outcome = await verbs.call(conn, "ask", ring_request("when is the darkroom booked currently"))
+
+    assert llm.calls == 1
+    assert outcome.data["sources"] == []

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -100,10 +101,31 @@ ARG_NAMES = {"capture": "text", "ask": "question", "schedule": "request", "do": 
 # cannot accidentally disable the mechanism that decides whether to spend money on a search.
 NEEDS_WEB = "NEED_SEARCH"
 ESCAPE_HATCH = (
-    f"If the notes above do not contain the answer and you do not reliably know it, reply "
-    f"with exactly {NEEDS_WEB} and nothing else. Do not guess at current events, prices, "
-    f"schedules, or anything that changes over time."
+    f"You have no live information. Your training data is old and may be wrong about anything "
+    f"that has changed. If the answer is not in the notes above, reply with exactly {NEEDS_WEB} "
+    f"and nothing else. Do that for current events, prices, schedules, sports results, "
+    f"software versions, releases, or anything else with a 'latest' or 'current'. "
+    f"Answering from memory and being out of date is a worse failure than asking to search."
 )
+
+# Questions whose answer changes over time. Asked without a matching note, these go straight to
+# the web rather than trusting the model to volunteer that it is out of date.
+#
+# This exists because trusting the instruction alone was not enough: asked for the current MCP
+# spec version, the model confidently returned a year-old answer instead of asking to search.
+# A wrong answer is worse than a $0.007 search, so freshness is decided deterministically.
+_TIME_SENSITIVE = re.compile(
+    r"\b(current|currently|latest|newest|right now|as of|today|tonight|tomorrow|yesterday|"
+    r"this (week|month|year)|recent|recently|news|headline|price|cost of|worth|weather|"
+    r"forecast|score|who won|winner|release[ds]?|version|update[ds]?|available|open now|"
+    r"still|now)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_time_sensitive(text: str) -> bool:
+    return bool(_TIME_SENSITIVE.search(text))
+
 
 # What the model must return to turn speech into an event. Strict, so a vague answer fails
 # loudly here rather than producing an event at the wrong time.
@@ -228,25 +250,38 @@ class Verbs:
         # $0.007, roughly 175 times more. So an extra model call to find out whether a search
         # is needed pays for itself many times over, and questions about the user's own life
         # never touch the network.
-        try:
-            completion = await llm.complete(
-                system=f"{answer_prompt}\n\n{ESCAPE_HATCH}",
-                user=local,
-                max_tokens=300,
-                timeout=40.0,
-            )
-        except LLMUnavailable as exc:
-            logger.warning("ask degraded: %s", exc)
-            return Outcome(
-                output=found.output or "I could not reach the model.",
-                semantic=coreschema.response("Could not answer just now."),
-                data=notes,
-            )
-
-        cost = completion.cost_usd
-        tokens_in, tokens_out = completion.tokens_in, completion.tokens_out
+        #
+        # The exception is a question whose answer changes over time. Asked with no matching
+        # note, those skip the local attempt: the model has been observed answering them from
+        # stale training data rather than asking to search, and a confidently wrong answer
+        # costs more than the search would have.
+        cost = 0.0
+        tokens_in = tokens_out = 0
         sources: list[dict] = []
-        answer = completion.text.strip()
+        answer = NEEDS_WEB
+        completion = None
+
+        skip_local = not notes and looks_time_sensitive(request.text)
+        if skip_local:
+            logger.info("time-sensitive question with no notes, searching directly")
+        else:
+            try:
+                completion = await llm.complete(
+                    system=f"{answer_prompt}\n\n{ESCAPE_HATCH}",
+                    user=local,
+                    max_tokens=300,
+                    timeout=40.0,
+                )
+            except LLMUnavailable as exc:
+                logger.warning("ask degraded: %s", exc)
+                return Outcome(
+                    output=found.output or "I could not reach the model.",
+                    semantic=coreschema.response("Could not answer just now."),
+                    data=notes,
+                )
+            cost = completion.cost_usd
+            tokens_in, tokens_out = completion.tokens_in, completion.tokens_out
+            answer = completion.text.strip()
 
         if answer.startswith(NEEDS_WEB) and self._web_available(conn):
             logger.info("journal could not answer, searching the web")
@@ -279,7 +314,7 @@ class Verbs:
             semantic=coreschema.response(answer or "I do not know."),
             data={"notes": notes, "sources": sources},
             cost_usd=cost,
-            model=completion.model,
+            model=completion.model if completion else None,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
         )
