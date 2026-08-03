@@ -4,6 +4,7 @@ that starts and then 500s on the first ring press is worse than one that won't b
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ class Config:
     openrouter_api_key: str | None = None
     model: str = "deepseek/deepseek-v4-flash-0731"
     daily_cost_cap_usd: float = 2.0
+    admin_password: str | None = None
+    session_secret: str = ""
 
     @property
     def journal_path(self) -> Path:
@@ -84,6 +87,12 @@ def load(env: dict[str, str] | None = None) -> Config:
         openrouter_api_key=(src.get("OPENROUTER_API_KEY") or "").strip() or None,
         model=src.get("SIGNET_MODEL", "deepseek/deepseek-v4-flash-0731"),
         daily_cost_cap_usd=float(src.get("SIGNET_DAILY_COST_CAP_USD", "2.00")),
+        # No password means no portal. signet is reachable from the internet through the
+        # tunnel, so an unauthenticated admin panel is not an acceptable default.
+        admin_password=(src.get("SIGNET_ADMIN_PASSWORD") or "").strip() or None,
+        # Derived from the bearer token so sessions survive a restart without another
+        # secret to manage. Distinct from the token itself so one cannot be used as the other.
+        session_secret=hashlib.sha256(f"session:{token}".encode()).hexdigest(),
     )
 
 

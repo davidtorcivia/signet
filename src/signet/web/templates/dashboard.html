@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}signet{% endblock %}
+{% block content %}
+
+<div class="stats">
+  <div class="stat"><b>{{ stats.captures_today }}</b><span>captured today</span></div>
+  <div class="stat"><b>{{ stats.requests_today }}</b><span>requests today</span></div>
+  <div class="stat"><b>${{ '%.4f'|format(stats.spend_today) }}</b><span>of ${{ '%.2f'|format(stats.cap) }} spent</span></div>
+  <div class="stat"><b>{{ stats.errors_today }}</b><span>errors today</span></div>
+</div>
+
+<h2>Latency</h2>
+{% if stats.latency %}
+  <div class="card">
+    {% for row in stats.latency %}
+      <div class="row" style="justify-content: space-between">
+        <span>{{ row.verb }}</span>
+        <span class="muted">p50 {{ row.p50 }}ms &middot; p95 {{ row.p95 }}ms &middot; {{ row.n }} calls</span>
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="card muted">Nothing yet.</div>
+{% endif %}
+
+<h2>Journal</h2>
+<div class="card">
+  <div class="row" style="justify-content: space-between">
+    <span>{{ stats.journal_total }} notes</span>
+    <span class="muted">{{ stats.journal_week }} this week</span>
+  </div>
+</div>
+
+<h2>Tokens</h2>
+{% for token in tokens %}
+  <div class="card row" style="justify-content: space-between">
+    <span>{{ token.name }}</span>
+    <span class="muted">{{ token.last_seen_at or 'never used' }}</span>
+  </div>
+{% endfor %}
+{% endblock %}

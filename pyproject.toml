@@ -5,7 +5,10 @@ description = "Self-hosted MCP server and agent gateway for the Pebble Index 01 
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "itsdangerous>=2.2.0",
+    "jinja2>=3.1.6",
     "mcp>=1.9",
+    "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
     "starlette>=0.40",
     "uvicorn[standard]>=0.30",
@@ -28,7 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/signet"]
-artifacts = ["src/signet/migrations/*.sql"]
+artifacts = ["src/signet/migrations/*.sql", "src/signet/web/templates/*.html", "src/signet/web/static/*"]
 
 [tool.ruff]
 line-length = 100

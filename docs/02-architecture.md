@@ -9,7 +9,7 @@ Supersedes the open questions at the end of [`01-design-options.md`](01-design-o
 | # | Question | Decision |
 | --- | --- | --- |
 | 1 | Where does the thinking happen? | **Option C.** Quick tool recognition on the phone; hard cases route to a server-side model. |
-| 2 | Async or hard-bounded? | **Async is fine for hard tasks.** Fast paths stay synchronous; `do()` may defer and push. |
+| 2 | Async or hard-bounded? | **Revised 2026-08-03: synchronous by default.** An MCP result renders natively in the app feed and surfaces on the watch, so answering in band *is* the watch integration. The measured tunnel round trip is 50–62 ms against a ~100 s edge budget, so nearly everything fits. `do()` may still defer, but deferral is the exception for genuinely long work, not the normal path. |
 | 3 | Memory owner | **signet owns it.** The feed is the corpus. |
 | 4 | Todo storage | **Deferred — explicit non-goal for v1.** The Pebble app already routes todos to its own store / Apple Reminders / Google Tasks; signet won't compete with that until there's a reason to. Captures land in signet's journal, which is searchable. Revisit if the split becomes annoying. |
 | 5 | Reach into the existing stack | **Hooks yes, but capability-scoped and approval-gated.** See [Security](#security-model). |
@@ -103,8 +103,17 @@ instead of building — Home Assistant's MCP integration, mem0, anything that sh
 it's the "routing station" property made concrete. Option D from the design doc, demoted to a
 plugin, which is where it belonged.
 
-**Outlets** — the same result can go to several places. An async `do()` returns "on it" through the
-MCP outlet immediately and the real answer through ntfy when it lands.
+**Outlets** — the same result can go to several places, but they are not equal. **The MCP result
+is the native outlet**: it renders as a first-class item in the app's feed and surfaces on the
+watch, which is where the user actually wants the answer. Everything that can be answered in
+band should be.
+
+ntfy is the **fallback**, used when work genuinely cannot finish inside the request window. An
+async `do()` returns "on it" through the MCP outlet and the real answer arrives as a push. That
+path exists because some work is slow, not because deferring is convenient.
+
+Getting on the watch is therefore a property of the `semantic` mapper on each capability, not a
+separate feature to build later. A capability that returns the wrong variant shows nothing.
 
 ### Adding a capability, end to end
 

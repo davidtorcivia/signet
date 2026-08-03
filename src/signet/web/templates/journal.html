@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Journal{% endblock %}
+{% block content %}
+<form class="inline" method="get" action="/app/journal" style="margin-bottom:1rem">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search your notes" autocomplete="off">
+  <button>Search</button>
+</form>
+
+{% if not entries %}
+  <div class="empty">{{ 'Nothing matches.' if q else 'No notes yet.' }}</div>
+{% endif %}
+{% for e in entries %}
+  <div class="card">
+    <div class="muted">{{ e.created_at }} &middot; {{ e.kind }}</div>
+    <p style="margin:.35rem 0 0">{{ e.text }}</p>
+  </div>
+{% endfor %}
+{% endblock %}

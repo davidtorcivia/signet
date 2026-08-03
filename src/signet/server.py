@@ -8,7 +8,7 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from starlette.requests import Request as HTTPRequest
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from . import config as config_module
 from . import coreschema, db
@@ -19,6 +19,7 @@ from .llm import LLM
 from .registry import Registry
 from .router import Router
 from .verbs import INSTRUCTIONS, TOOLS, Verbs
+from .web import app as web_app
 
 logger = logging.getLogger("signet")
 
@@ -111,13 +112,21 @@ def create_app(cfg: Config | None = None):
 
     server = build_mcp_server(cfg, build_verbs(cfg))
 
+    portal = web_app.build(cfg)
+    routes = [Route("/healthz", _healthz, methods=["GET"])]
+    if portal is not None:
+        routes.append(Mount("/app", app=portal))
+        logger.info("admin portal mounted at /app")
+    else:
+        logger.warning("no SIGNET_ADMIN_PASSWORD set, admin portal is disabled")
+
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
         # The transport's default is SSE-framed POST responses, which Cloudflare Tunnel
         # buffers until the stream closes (docs/00-research.md section 5.1). Single JSON
         # responses are the entire reason the tunnel path works. Do not remove.
         json_response=True,
-        custom_starlette_routes=[Route("/healthz", _healthz, methods=["GET"])],
+        custom_starlette_routes=routes,
         host=cfg.host,
     )
 

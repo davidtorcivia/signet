@@ -1,0 +1,19 @@
+{% if not requests %}
+  <div class="empty">Nothing yet. Press the ring and it shows up here.</div>
+{% endif %}
+{% for r in requests %}
+  <div class="card">
+    <div class="row" style="justify-content: space-between">
+      <span class="tag {{ 'ok' if r.status == 'ok' else 'bad' }}">{{ r.verb or 'unknown' }}</span>
+      <span class="muted">{{ r.received_at }}</span>
+    </div>
+    <p style="margin:.5rem 0 0">{{ r.text }}</p>
+    {% if r.answer %}<pre>{{ r.answer }}</pre>{% endif %}
+    <div class="row muted" style="margin-top:.5rem">
+      {% if r.latency_ms is not none %}<span>{{ r.latency_ms }}ms</span>{% endif %}
+      {% if r.cost_usd %}<span>${{ '%.5f'|format(r.cost_usd) }}</span>{% endif %}
+      {% if r.model %}<span>{{ r.model }}</span>{% endif %}
+      {% if r.error %}<span class="tag bad">{{ r.error }}</span>{% endif %}
+    </div>
+  </div>
+{% endfor %}

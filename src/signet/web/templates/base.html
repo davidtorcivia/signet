@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}signet{% endblock %}</title>
+<style>
+/* Mobile first. The realistic use is standing somewhere holding a phone, having just
+   pressed the ring, wanting to know what signet did with it. Desktop is the enhancement. */
+:root {
+  --bg: #fbfaf8;
+  --panel: #ffffff;
+  --ink: #1b1a19;
+  --muted: #6b6864;
+  --line: #e5e1db;
+  --accent: #7c4a2d;
+  --ok: #2f6b45;
+  --bad: #9b2c25;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16151a;
+    --panel: #1f1e24;
+    --ink: #eceaea;
+    --muted: #9a9691;
+    --line: #322f38;
+    --accent: #d59a72;
+    --ok: #7fbf95;
+    --bad: #e78078;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding-bottom: 5rem;
+  -webkit-text-size-adjust: 100%;
+}
+header {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+  padding: .85rem 1rem; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 1.05rem; margin: 0; letter-spacing: .02em; }
+header h1 a { color: inherit; text-decoration: none; }
+main { padding: 1rem; max-width: 60rem; margin: 0 auto; }
+
+/* Bottom bar: thumb-reachable on a phone, ordinary nav on a wide screen. */
+nav.tabs {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+  display: flex; background: var(--panel); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+nav.tabs a {
+  flex: 1; text-align: center; padding: .8rem .25rem; font-size: .8rem;
+  color: var(--muted); text-decoration: none; min-height: 44px;
+}
+nav.tabs a.on { color: var(--accent); font-weight: 600; box-shadow: inset 0 2px 0 var(--accent); }
+@media (min-width: 48rem) {
+  nav.tabs { position: static; border-top: 0; border-bottom: 1px solid var(--line); }
+  body { padding-bottom: 1rem; }
+}
+
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: .9rem; margin-bottom: .75rem;
+}
+.row { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+.muted { color: var(--muted); font-size: .82rem; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
+.tag {
+  display: inline-block; padding: .1rem .45rem; border-radius: 99px;
+  font-size: .72rem; border: 1px solid var(--line); color: var(--muted);
+}
+.tag.ok { color: var(--ok); border-color: var(--ok); }
+.tag.bad { color: var(--bad); border-color: var(--bad); }
+
+/* Stats wrap instead of scrolling sideways. Nothing horizontal on a phone. */
+.stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: .6rem; }
+@media (min-width: 40rem) { .stats { grid-template-columns: repeat(4, 1fr); } }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: .75rem; }
+.stat b { display: block; font-size: 1.5rem; font-weight: 650; line-height: 1.2; }
+.stat span { color: var(--muted); font-size: .75rem; }
+
+input, button, select {
+  font: inherit; padding: .6rem .7rem; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  min-height: 44px; /* touch target */
+}
+input[type=text], input[type=password], input[type=search] { width: 100%; }
+button { background: var(--accent); color: #fff; border: 0; font-weight: 600; }
+button.quiet { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+button.danger { background: var(--bad); }
+form.inline { display: flex; gap: .5rem; flex-wrap: wrap; }
+form.inline > input { flex: 1 1 12rem; }
+
+pre {
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: .6rem; margin: .5rem 0 0; overflow-x: auto;
+}
+a { color: var(--accent); }
+.empty { text-align: center; color: var(--muted); padding: 2.5rem 1rem; }
+.banner {
+  border: 1px solid var(--bad); color: var(--bad);
+  border-radius: var(--radius); padding: .7rem .9rem; margin-bottom: .75rem;
+}
+</style>
+<script src="/app/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header>
+  <h1><a href="/app/">signet</a></h1>
+  {% if kill_switch %}
+    <form method="post" action="/app/kill"><button class="danger">Paused. Resume</button></form>
+  {% else %}
+    <form method="post" action="/app/kill"><button class="quiet">Pause</button></form>
+  {% endif %}
+</header>
+
+<nav class="tabs">
+  <a href="/app/" class="{{ 'on' if page == 'dashboard' }}">Overview</a>
+  <a href="/app/feed" class="{{ 'on' if page == 'feed' }}">Feed</a>
+  <a href="/app/journal" class="{{ 'on' if page == 'journal' }}">Journal</a>
+  <a href="/app/tokens" class="{{ 'on' if page == 'tokens' }}">Tokens</a>
+</nav>
+
+<main>
+  {% if kill_switch %}
+    <div class="banner">Paused. Only capture is working, so nothing you say is lost.</div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
