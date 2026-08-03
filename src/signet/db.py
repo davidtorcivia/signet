@@ -296,9 +296,7 @@ _FTS_TOKEN = re.compile(r"[A-Za-z0-9']+")
 # them is how "what happened to the enlarger?" fails to match a note that says the enlarger
 # blew. Kept deliberately short: this is about question scaffolding, not general stopwording.
 STOPWORDS = frozenset(
-    """a an and are as at be but by can did do does for from had has have how i if in into is
-    it its me my of on or say said tell that the their them then there these they this to was
-    were what when where which who whom why will with would you your about""".split()
+    ["a", "an", "and", "are", "as", "at", "be", "but", "by", "can", "did", "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or", "say", "said", "tell", "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "was", "were", "what", "when", "where", "which", "who", "whom", "why", "will", "with", "would", "you", "your", "about"]
 )
 
 
