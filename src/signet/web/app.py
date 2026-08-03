@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import secrets
 import statistics
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from .. import db, google, prompts
+from .. import db, google, openrouter, prompts
 from ..config import Config
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -41,6 +42,20 @@ HTMX = (
     if (Path(__file__).parent / "static" / "htmx.min.js").exists()
     else ""
 )
+
+
+def _ago(timestamp: str) -> str:
+    try:
+        seconds = time.time() - float(timestamp)
+    except ValueError:
+        return "never"
+    if seconds < 0 or seconds > 10**9:
+        return "never"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} h ago"
+    return f"{int(seconds // 86400)} d ago"
 
 
 def _authed(request: Request) -> bool:
@@ -250,13 +265,6 @@ SETTINGS_FIELDS = [
         "env": "exa_api_key",
     },
     {
-        "key": "model",
-        "label": "Model",
-        "kind": "text",
-        "help": "Any OpenRouter model id.",
-        "env": "model",
-    },
-    {
         "key": "provider",
         "label": "Provider routing (JSON)",
         "kind": "json",
@@ -353,6 +361,17 @@ async def settings_page(request: Request) -> Response:
     try:
         google_ready = bool(db.get_config(conn, "google_client_id"))
         google_connected = google.connected(conn)
+
+        current_model = db.get_config(conn, "model") or cfg.model
+        models = await openrouter.fetch_models(conn)
+        providers = await openrouter.fetch_providers(conn, current_model)
+        selected_providers, allow_fallbacks = openrouter.read_provider_config(
+            db.get_config(conn, "provider")
+        )
+        # Ticked providers first, in their saved order, so the list reads as the routing order.
+        ordered = [p for p in selected_providers if p in providers]
+        ordered += [p for p in providers if p not in selected_providers]
+        cached_at = db.get_setting(conn, openrouter.CACHE_AT_KEY, "0")
     finally:
         conn.close()
     return _render(
@@ -364,6 +383,13 @@ async def settings_page(request: Request) -> Response:
         errors=errors,
         google_ready=google_ready,
         google_connected=google_connected,
+        models=models,
+        model_ids={m.id for m in models},
+        current_model=current_model,
+        providers=ordered,
+        selected_providers=selected_providers,
+        allow_fallbacks=allow_fallbacks,
+        cached_ago=_ago(cached_at),
     )
 
 
@@ -375,9 +401,27 @@ async def save_settings(request: Request) -> Response:
     conn = _conn(request)
     try:
         clearing = str(form.get("clear") or "")
-        if clearing in db.CONFIGURABLE:
+        if str(form.get("refresh") or "") == "models":
+            await openrouter.fetch_models(conn, force=True)
+            model_now = db.get_config(conn, "model") or request.app.state.cfg.model
+            await openrouter.fetch_providers(conn, model_now, force=True)
+        elif clearing in db.CONFIGURABLE:
             db.clear_config(conn, clearing)
         else:
+            chosen_model = str(form.get("model") or "").strip()
+            if chosen_model:
+                db.set_config(conn, "model", chosen_model)
+
+            # Checkbox values arrive in DOM order, which the up and down buttons control, so
+            # the submitted order is the routing order.
+            order = [str(v) for v in form.getlist("provider_order") if v]
+            allow_fallbacks = bool(form.get("allow_fallbacks"))
+            provider_config = openrouter.build_provider_config(order, allow_fallbacks)
+            if provider_config:
+                db.set_config(conn, "provider", json.dumps(provider_config))
+            else:
+                db.clear_config(conn, "provider")
+
             for spec in SETTINGS_FIELDS:
                 submitted = str(form.get(spec["key"], "")).strip()
                 if spec["kind"] == "secret" and not submitted:

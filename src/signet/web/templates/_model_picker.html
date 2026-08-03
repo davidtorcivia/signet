@@ -1,0 +1,87 @@
+<div class="card">
+  <label for="model"><b>Model</b></label>
+  <div class="muted" style="margin:.2rem 0 .5rem">
+    Prices are per million tokens, input then output.
+    {% if not models %}Could not reach OpenRouter, so this is a plain text box.{% endif %}
+  </div>
+
+  {% if models %}
+    <select id="model" name="model" style="width:100%">
+      <optgroup label="Supports structured output (needed for routing and scheduling)">
+        {% for m in models if m.structured %}
+          <option value="{{ m.id }}" {{ 'selected' if m.id == current_model }}>{{ m.label }}</option>
+        {% endfor %}
+      </optgroup>
+      <optgroup label="Answers only">
+        {% for m in models if not m.structured %}
+          <option value="{{ m.id }}" {{ 'selected' if m.id == current_model }}>{{ m.label }}</option>
+        {% endfor %}
+      </optgroup>
+      {% if current_model and current_model not in model_ids %}
+        <optgroup label="Currently set">
+          <option value="{{ current_model }}" selected>{{ current_model }}</option>
+        </optgroup>
+      {% endif %}
+    </select>
+  {% else %}
+    <input type="text" id="model" name="model" value="{{ current_model }}">
+  {% endif %}
+
+  <div class="muted" style="margin-top:.5rem">
+    {{ models|length }} models, cached {{ cached_ago }}.
+    <button class="quiet" name="refresh" value="models" style="margin-left:.4rem">Refresh list</button>
+  </div>
+</div>
+
+<div class="card">
+  <b>Provider routing</b>
+  <div class="muted" style="margin:.2rem 0 .6rem">
+    Which providers may serve this model, in order of preference. Leave everything unticked to
+    let OpenRouter choose.
+  </div>
+
+  {% if providers %}
+    <ul id="provider-list" style="list-style:none;padding:0;margin:0">
+      {% for p in providers %}
+        <li data-provider="{{ p }}"
+            style="display:flex;align-items:center;gap:.5rem;padding:.45rem 0;border-bottom:1px solid var(--line)">
+          <input type="checkbox" name="provider_order" value="{{ p }}"
+                 id="prov-{{ loop.index }}" style="min-height:auto;width:1.15rem;height:1.15rem"
+                 {{ 'checked' if p in selected_providers }}>
+          <label for="prov-{{ loop.index }}" style="flex:1">{{ p }}</label>
+          <button type="button" class="quiet move" data-dir="up"
+                  style="min-height:36px;padding:.2rem .55rem">&uarr;</button>
+          <button type="button" class="quiet move" data-dir="down"
+                  style="min-height:36px;padding:.2rem .55rem">&darr;</button>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.7rem">
+      <input type="checkbox" name="allow_fallbacks" value="1"
+             style="min-height:auto;width:1.15rem;height:1.15rem"
+             {{ 'checked' if allow_fallbacks }}>
+      <span>Allow other providers if the ones above fail</span>
+    </label>
+    <div class="muted" style="margin-top:.35rem">
+      Unticked means only the ticked providers are used, and the call fails if none are up.
+    </div>
+  {% else %}
+    <div class="muted">
+      No provider list for this model yet. Save the model first, then reopen this page.
+    </div>
+  {% endif %}
+</div>
+
+<script>
+// Reordering without a framework: move the row, and submission order follows the DOM.
+document.addEventListener('click', function (event) {
+  var button = event.target.closest('.move');
+  if (!button) return;
+  var row = button.closest('li');
+  var sibling = button.dataset.dir === 'up' ? row.previousElementSibling : row.nextElementSibling;
+  if (!sibling) return;
+  if (button.dataset.dir === 'up') { row.parentNode.insertBefore(row, sibling); }
+  else { row.parentNode.insertBefore(sibling, row); }
+});
+</script>

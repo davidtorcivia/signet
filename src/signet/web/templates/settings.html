@@ -25,6 +25,7 @@
 {% if saved %}<div class="card"><b>Saved.</b> It applies to the next request, no restart needed.</div>{% endif %}
 
 <form method="post" action="/app/settings">
+  {% include "_model_picker.html" %}
   {% for field in fields %}
     <div class="card">
       <label for="{{ field.key }}"><b>{{ field.label }}</b></label>

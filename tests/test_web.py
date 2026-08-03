@@ -7,6 +7,8 @@ not a convenience.
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import httpx
@@ -256,3 +258,114 @@ async def test_only_allowlisted_keys_are_settable(cfg):
     with pytest.raises(ValueError):
         db.set_config(conn, "token", "anything")
     conn.close()
+
+
+SAMPLE_MODELS = {
+    "data": [
+        {
+            "id": "deepseek/deepseek-v4-flash-0731",
+            "name": "DeepSeek: V4 Flash",
+            "context_length": 1000000,
+            "pricing": {"prompt": "0.00000009", "completion": "0.00000018"},
+            "supported_parameters": ["tools", "structured_outputs"],
+        },
+        {
+            "id": "someone/chatty",
+            "name": "Someone: Chatty",
+            "context_length": 8000,
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+            "supported_parameters": ["temperature"],
+        },
+    ]
+}
+
+
+@pytest.fixture
+def catalogue(cfg):
+    """Prime the caches so the settings page never touches the network in tests."""
+    from signet import openrouter
+
+    conn = db.connect(cfg.db_path)
+    db.set_setting(conn, openrouter.CACHE_KEY, json.dumps(SAMPLE_MODELS))
+    db.set_setting(conn, openrouter.CACHE_AT_KEY, str(time.time()))
+    db.set_setting(
+        conn,
+        openrouter.PROVIDER_CACHE_PREFIX + "deepseek/deepseek-v4-flash-0731",
+        json.dumps(["DeepInfra", "Fireworks", "Novita"]),
+    )
+    conn.close()
+
+
+async def test_model_picker_lists_models_and_marks_the_current_one(
+    client: httpx.AsyncClient, catalogue
+):
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+
+    assert '<select id="model"' in body
+    assert "DeepSeek: V4 Flash" in body
+    assert "Someone: Chatty" in body
+    # Structured-output models are grouped first, because routing and scheduling need them.
+    assert body.index("Supports structured output") < body.index("Answers only")
+    assert "$0.09/$0.18 per M" in body
+
+
+async def test_provider_picker_lists_real_providers(client: httpx.AsyncClient, catalogue):
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+    for provider in ("DeepInfra", "Fireworks", "Novita"):
+        assert provider in body
+    assert 'name="provider_order"' in body
+
+
+async def test_selecting_providers_builds_the_routing_block(
+    client: httpx.AsyncClient, cfg, catalogue
+):
+    await sign_in(client)
+    await client.post("/settings", data={"provider_order": ["Novita", "DeepInfra"]})
+
+    conn = db.connect(cfg.db_path)
+    stored = json.loads(db.get_config(conn, "provider"))
+    conn.close()
+    # Submitted order is the routing order, and no allow_fallbacks checkbox means locked down.
+    assert stored == {"order": ["Novita", "DeepInfra"], "allow_fallbacks": False}
+
+
+async def test_allowing_fallbacks_is_recorded(client: httpx.AsyncClient, cfg, catalogue):
+    await sign_in(client)
+    await client.post("/settings", data={"provider_order": "Novita", "allow_fallbacks": "1"})
+
+    conn = db.connect(cfg.db_path)
+    stored = json.loads(db.get_config(conn, "provider"))
+    conn.close()
+    assert stored == {"order": ["Novita"]}
+
+
+async def test_no_providers_ticked_clears_the_preference(client: httpx.AsyncClient, cfg, catalogue):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "provider", json.dumps({"order": ["Novita"]}))
+    conn.close()
+
+    await sign_in(client)
+    await client.post("/settings", data={"allow_fallbacks": "1"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "provider") is None
+    conn.close()
+
+
+async def test_choosing_a_model_is_saved(client: httpx.AsyncClient, cfg, catalogue):
+    await sign_in(client)
+    await client.post("/settings", data={"model": "someone/chatty"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "model") == "someone/chatty"
+    conn.close()
+
+
+async def test_settings_page_survives_an_empty_catalogue(client: httpx.AsyncClient):
+    """No network and no cache should degrade to a text box, not a broken page."""
+    await sign_in(client)
+    response = await client.get("/settings")
+    assert response.status_code == 200
+    assert 'id="model"' in response.text
