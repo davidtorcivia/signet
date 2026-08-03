@@ -1,0 +1,57 @@
+# Deploy target: /srv/apps/signet/docker-compose.yml on erebus.
+# One directory per app, per the box convention.
+#
+# Unlike most apps here, signet is NOT fronted by Caddy: the Cloudflare Tunnel points straight
+# at it. cloudflared runs on the host under systemd (`tunnel run --token`), so it reaches
+# 127.0.0.1:8300 directly. That means no shared Docker network, no reverse-proxy stanza, and
+# nothing published on the LAN — signet keeps its own default network, which is what
+# docs/02-architecture.md asks for under Blast radius.
+#
+# Runs locally with no changes: `docker compose up -d`.
+services:
+  signet-api:
+    build: .
+    image: signet:0.1.0
+    container_name: signet-api
+    restart: unless-stopped
+    env_file: .env
+    # Run as the host user that owns ./data, so the bind-mounted journal is writable by the
+    # container and readable/backup-able by you. The image's own `signet` user (uid 10001)
+    # cannot write to a directory owned by uid 1000, which is exactly how the first deploy
+    # failed. Override per-host with SIGNET_UID/SIGNET_GID in .env if the owner differs;
+    # `id -u` / `id -g` on the box gives the right values.
+    user: "${SIGNET_UID:-1000}:${SIGNET_GID:-1000}"
+    environment:
+      SIGNET_DATA_DIR: /data
+      SIGNET_HOST: 0.0.0.0
+      SIGNET_PORT: "8300"
+    volumes:
+      - ./data:/data
+    # Loopback only. cloudflared runs on the host, so the tunnel reaches this; the LAN cannot.
+    # Also what `scripts/legacy_handshake.py` talks to when run on erebus.
+    ports:
+      - "127.0.0.1:8300:8300"
+    # Blast radius (docs/02-architecture.md, Security). A voice agent reachable by a button
+    # pressed through a trouser pocket gets the tightest container settings that still work.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/healthz', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
