@@ -163,3 +163,36 @@ def test_semantic_result_carries_no_unknown_keys(legacy: LegacyClient):
         "tools/call", {"name": "capture", "arguments": {"text": "field check"}}, id_=4
     )["result"]
     assert set(result["structuredContent"]["semanticResult"]) <= {"type", "text", "question"}
+
+
+def test_get_on_mcp_does_not_open_a_stream(server: str):
+    """The Pebble app finished its handshake, opened GET /mcp for server-initiated messages,
+    and hung until its socket timed out: the SDK serves that as SSE, and the tunnel buffers
+    SSE until the stream closes. json_response=True does not cover it, since that flag governs
+    POST responses only.
+
+    signet never pushes anything, so the stream is refused and the client carries on.
+    """
+    response = httpx.get(f"{server}/mcp", headers=HEADERS, timeout=10)
+
+    assert response.status_code == 405
+    assert "text/event-stream" not in response.headers.get("content-type", "")
+    assert "POST" in response.headers.get("allow", "")
+
+
+def test_the_rest_of_the_session_still_works(legacy: LegacyClient):
+    """Refusing the stream must not break the methods that matter."""
+    legacy.initialize()
+    legacy.initialized()
+    assert legacy.call("tools/list")["result"]["tools"]
+
+
+def test_session_teardown_still_works(server: str, legacy: LegacyClient):
+    legacy.initialize()
+    response = httpx.request(
+        "DELETE",
+        f"{server}/mcp",
+        headers={**HEADERS, "Mcp-Session-Id": legacy.session_id or ""},
+        timeout=10,
+    )
+    assert response.status_code < 500

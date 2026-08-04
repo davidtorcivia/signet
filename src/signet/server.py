@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import mcp.types as types
@@ -9,6 +10,7 @@ from mcp.server.lowlevel import Server
 from starlette.requests import Request as HTTPRequest
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config as config_module
 from . import coreschema, db
@@ -74,6 +76,55 @@ def _principal_from(ctx: object) -> Principal | None:
     return None
 
 
+class RefuseNotificationStream:
+    """Answer `GET /mcp` with 405 instead of opening a stream.
+
+    Streamable HTTP lets a client open a long-lived GET for server-initiated messages. The SDK
+    serves it as SSE, and `json_response=True` does not cover it: that flag only governs POST
+    responses. Cloudflare Tunnel buffers SSE until the stream closes, so the Pebble app
+    completed its handshake, opened this GET, and hung until its socket timed out.
+
+    The stream is optional. The spec says a server that does not offer it returns 405 and the
+    client carries on without it, which is right here because signet never pushes anything: an
+    answer is the response to the call that asked for it.
+    """
+
+    def __init__(self, app: ASGIApp, path: str = "/mcp") -> None:
+        self.app = app
+        self.path = path
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "GET"
+            and scope["path"].rstrip("/") == self.path
+        ):
+            body = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32601,
+                        "message": "This server does not offer a notification stream.",
+                    },
+                    "id": None,
+                }
+            ).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 405,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"allow", b"POST, DELETE"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
 async def _healthz(request: HTTPRequest) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "signet"})
 
@@ -130,4 +181,5 @@ def create_app(cfg: Config | None = None):
         host=cfg.host,
     )
 
-    return BearerAuthMiddleware(app, DbTokenVerifier(cfg))
+    # Outermost, so the stream is refused before auth or the transport sees it.
+    return RefuseNotificationStream(BearerAuthMiddleware(app, DbTokenVerifier(cfg)))
