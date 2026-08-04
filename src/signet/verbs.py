@@ -160,17 +160,33 @@ def looks_time_sensitive(text: str) -> bool:
     return bool(_TIME_SENSITIVE.search(text))
 
 
-# What the model must return to turn speech into an event. Strict, so a vague answer fails
-# loudly here rather than producing an event at the wrong time.
+# A list, because one spoken sentence often means several events: "holds for Adobe on the
+# 21st, 22nd and 24th" is three. Asked for a single object the model either picked one date or
+# invented a span across all of them.
 EVENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string"},
-        "start": {"type": "string", "description": "ISO-8601 with UTC offset"},
-        "end": {"type": "string", "description": "ISO-8601 with UTC offset"},
-        "location": {"type": ["string", "null"]},
+        "events": {
+            "type": "array",
+            "description": "One entry per event. Three dates mentioned means three entries.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "Short title"},
+                    "start": {"type": "string", "description": "ISO-8601 with offset"},
+                    "end": {"type": "string", "description": "ISO-8601 with offset"},
+                    "all_day": {
+                        "type": "boolean",
+                        "description": "true for a whole-day event or hold with no time",
+                    },
+                    "location": {"type": ["string", "null"]},
+                },
+                "required": ["summary", "start", "end", "all_day", "location"],
+                "additionalProperties": False,
+            },
+        }
     },
-    "required": ["summary", "start", "end", "location"],
+    "required": ["events"],
     "additionalProperties": False,
 }
 
@@ -403,7 +419,9 @@ class Verbs:
             )
 
         parsed = completion.data or {}
-        if not parsed.get("summary") or not parsed.get("start") or not parsed.get("end"):
+        events = [e for e in (parsed.get("events") or []) if isinstance(e, dict)]
+        events = [e for e in events if e.get("summary") and e.get("start")]
+        if not events:
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
             message = "Couldn't work out the time, saved to your journal"
             return Outcome(
@@ -411,25 +429,63 @@ class Verbs:
                 semantic=coreschema.action_logged("signet", message, success=False),
             )
 
-        outcome = await self._run(
-            conn,
-            request,
-            "calendar.create_event",
-            {
-                "summary": parsed["summary"],
-                "start": parsed["start"],
-                "end": parsed["end"],
-                "location": parsed.get("location"),
-            },
-        )
-        if outcome.is_error:
-            # The calendar refused. Keep the words rather than lose them.
+        created: list[Outcome] = []
+        failed = 0
+        for event in events:
+            outcome = await self._run(
+                conn,
+                request,
+                "calendar.create_event",
+                {
+                    "summary": event["summary"],
+                    "start": event["start"],
+                    "end": event.get("end") or event["start"],
+                    "location": event.get("location"),
+                    "all_day": bool(event.get("all_day")),
+                },
+            )
+            if outcome.is_error:
+                failed += 1
+            else:
+                created.append(outcome)
+
+        if not created:
+            # Nothing landed, so keep the words rather than lose them.
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
-        outcome.cost_usd += completion.cost_usd
-        outcome.model = completion.model
-        outcome.tokens_in = completion.tokens_in
-        outcome.tokens_out = completion.tokens_out
-        return outcome
+            message = "Couldn't add that to your calendar, saved to your journal"
+            # Deliberately not is_error: the request was handled, just not the way asked.
+            # Flagging it would invite the on-device model to retry, and a retry duplicates
+            # the journal note. The reason is recorded for the feed instead.
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=False),
+                error="calendar rejected every event",
+                cost_usd=completion.cost_usd,
+                model=completion.model,
+            )
+
+        if len(created) == 1 and not failed:
+            # One event keeps the rich variant, which renders as a real calendar item.
+            result = created[0]
+            result.cost_usd += completion.cost_usd
+            result.model = completion.model
+            result.tokens_in = completion.tokens_in
+            result.tokens_out = completion.tokens_out
+            return result
+
+        titles = ", ".join(str((c.data or {}).get("summary", "")) for c in created)
+        note = f"Added {len(created)} events: {titles}"
+        if failed:
+            note += f" ({failed} failed)"
+        return Outcome(
+            output=note,
+            semantic=coreschema.action_logged("signet", note, success=not failed),
+            data={"created": len(created), "failed": failed},
+            cost_usd=completion.cost_usd,
+            model=completion.model,
+            tokens_in=completion.tokens_in,
+            tokens_out=completion.tokens_out,
+        )
 
     async def do(self, conn: sqlite3.Connection, request: Request) -> Outcome:
         router = Router(self._llm_for(conn), rules_path=self.router.rules_path)

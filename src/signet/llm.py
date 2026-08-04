@@ -192,6 +192,15 @@ class LLM:
             ],
             "max_tokens": max_tokens,
         }
+        if schema is not None:
+            # Reasoning tokens come out of the same budget as the answer. Asked for a calendar
+            # event with 300 tokens, this model spent all 300 thinking and returned content of
+            # None with finish_reason "length", so the reply was empty and unparseable. These
+            # calls want a small object, not deliberation.
+            if "reasoning" not in self.params:
+                body["reasoning"] = {"enabled": False}
+            body["max_tokens"] = max(body["max_tokens"], 800)
+
         if self.provider:
             body["provider"] = self.provider
         if self.params:
@@ -233,7 +242,12 @@ class LLM:
         except httpx.HTTPError as exc:
             raise LLMUnavailable(f"openrouter request failed: {exc}") from exc
 
-        choice = payload["choices"][0]["message"]["content"] or ""
+        message = payload["choices"][0]["message"]
+        choice = message.get("content") or ""
+        if not choice and schema is not None:
+            # Some endpoints put everything in `reasoning` when the content budget runs out.
+            # The object is often in there, so it is worth a look before giving up.
+            choice = message.get("reasoning") or ""
         usage = payload.get("usage") or {}
         tokens_in = int(usage.get("prompt_tokens", 0))
         tokens_out = int(usage.get("completion_tokens", 0))

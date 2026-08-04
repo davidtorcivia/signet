@@ -6,6 +6,7 @@ files the words in the journal.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -62,10 +63,15 @@ class SchedulingLLM(LLM):
             data
             if data is not None
             else {
-                "summary": "Coffee with Sarah",
-                "start": "2026-08-07T15:00:00+01:00",
-                "end": "2026-08-07T16:00:00+01:00",
-                "location": None,
+                "events": [
+                    {
+                        "summary": "Coffee with Sarah",
+                        "start": "2026-08-07T15:00:00+01:00",
+                        "end": "2026-08-07T16:00:00+01:00",
+                        "all_day": False,
+                        "location": None,
+                    }
+                ]
             }
         )
 
@@ -203,7 +209,11 @@ async def test_calendar_refusing_still_keeps_the_words(cfg, conn, monkeypatch):
     verbs = build(cfg, SchedulingLLM())
     outcome = await verbs.call(conn, "schedule", ring("coffee with Sarah Friday at 3"))
 
-    assert outcome.is_error
+    # Not flagged as a failed tool call: the request was handled, just not as asked. Flagging
+    # it would invite the on-device model to retry, which would duplicate the journal note.
+    assert not outcome.is_error
+    assert outcome.error, "the reason still has to reach the feed"
+    assert "saved to your journal" in coreschema.headline(outcome.semantic)
     assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == [
         "coffee with Sarah Friday at 3"
     ]
@@ -279,3 +289,117 @@ async def test_list_puts_a_readable_time_on_the_watch(conn, monkeypatch):
     assert shown.startswith("Nami Nori Williamsburg,")
     # The model still gets the precise timestamp.
     assert "2026-08-06T20:00:00-04:00" in outcome.output
+
+
+async def test_several_dates_become_several_events(cfg, conn, monkeypatch):
+    """ "Holds for Adobe on the 21st, 22nd and 24th" is three events. Asked for one object the
+    model either picked a single date or invented a span across all of them, and the reply
+    came back unparseable."""
+    made = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        made.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "id": f"id{len(made)}",
+                "summary": body["summary"],
+                "start": body["start"],
+                "end": body["end"],
+            },
+        )
+
+    connect_google(conn)
+    patch_calendar(monkeypatch, handler)
+
+    verbs = build(
+        cfg,
+        SchedulingLLM(
+            data={
+                "events": [
+                    {
+                        "summary": "Adobe hold",
+                        "start": f"2026-08-{day}",
+                        "end": f"2026-08-{day}",
+                        "all_day": True,
+                        "location": None,
+                    }
+                    for day in ("21", "22", "24")
+                ]
+            }
+        ),
+    )
+    outcome = await verbs.call(conn, "schedule", ring("Adobe holds Aug 21st, 22nd and 24th"))
+
+    assert not outcome.is_error
+    assert len(made) == 3
+    assert outcome.data["created"] == 3
+    assert "3 events" in coreschema.headline(outcome.semantic)
+
+
+async def test_all_day_events_use_dates_not_times(cfg, conn, monkeypatch):
+    """Google wants `date` rather than `dateTime`, and treats the end as exclusive. Sending
+    the same day for both makes a zero-length event that appears nowhere."""
+    sent = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.update(json.loads(request.content))
+        return httpx.Response(200, json={"id": "1", "summary": "Adobe hold", **sent})
+
+    connect_google(conn)
+    patch_calendar(monkeypatch, handler)
+
+    registry = Registry()
+    registry.discover()
+    await registry.invoke(
+        conn,
+        ring("x"),
+        "calendar.create_event",
+        {
+            "summary": "Adobe hold",
+            "start": "2026-08-21",
+            "end": "2026-08-21",
+            "all_day": True,
+        },
+    )
+
+    assert sent["start"] == {"date": "2026-08-21"}
+    assert sent["end"] == {"date": "2026-08-22"}, "end date must be the following day"
+
+
+async def test_partial_failure_still_reports_what_landed(cfg, conn, monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return httpx.Response(403, json={"error": "nope"})
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"id": "1", "summary": body["summary"], **body})
+
+    connect_google(conn)
+    patch_calendar(monkeypatch, handler)
+
+    verbs = build(
+        cfg,
+        SchedulingLLM(
+            data={
+                "events": [
+                    {
+                        "summary": f"Hold {n}",
+                        "start": f"2026-08-2{n}",
+                        "end": f"2026-08-2{n}",
+                        "all_day": True,
+                        "location": None,
+                    }
+                    for n in (1, 2)
+                ]
+            }
+        ),
+    )
+    outcome = await verbs.call(conn, "schedule", ring("two holds"))
+
+    assert outcome.data["created"] == 1
+    assert outcome.data["failed"] == 1
+    assert "failed" in coreschema.headline(outcome.semantic)

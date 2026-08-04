@@ -67,6 +67,7 @@ class CreateArgs(BaseModel):
     start: str = Field(description="Start time, ISO-8601 with offset.")
     end: str = Field(description="End time, ISO-8601 with offset.")
     location: str | None = Field(default=None)
+    all_day: bool = Field(default=False, description="A whole-day event or hold.")
 
 
 def _credentials(conn: sqlite3.Connection) -> tuple[str, str]:
@@ -144,6 +145,7 @@ async def create_event(request: Request, args: CreateArgs) -> Outcome:
                 start=args.start,
                 end=args.end,
                 location=args.location,
+                all_day=args.all_day,
             )
         except google.GoogleUnavailable as exc:
             logger.warning("event creation failed: %s", exc)
@@ -157,16 +159,23 @@ async def create_event(request: Request, args: CreateArgs) -> Outcome:
     finally:
         conn.close()
 
-    return Outcome(
-        output=f"Created {event.summary} at {event.start}.",
-        # The variant that renders as a real calendar item in the app feed and on the watch.
-        semantic=coreschema.calendar_event(
+    # CalendarEventCreation parses startTime as an instant, so an all-day event's bare date
+    # would fail to render. Those get a plain headline instead.
+    if args.all_day:
+        semantic = coreschema.action_logged(
+            "signet", f"{event.summary}, {when(event.start)}", success=True
+        )
+    else:
+        semantic = coreschema.calendar_event(
             title=event.summary,
             start_time=event.start,
             end_time=event.end,
             location=event.location,
-        ),
-        data={"id": event.id, "link": event.html_link},
+        )
+    return Outcome(
+        output=f"Created {event.summary} at {event.start}.",
+        semantic=semantic,
+        data={"id": event.id, "link": event.html_link, "summary": event.summary},
     )
 
 

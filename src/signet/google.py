@@ -201,12 +201,32 @@ class Calendar:
         location: str | None = None,
         description: str | None = None,
         calendar_id: str = "primary",
+        all_day: bool = False,
     ) -> Event:
-        body: dict[str, Any] = {
-            "summary": summary,
-            "start": {"dateTime": start},
-            "end": {"dateTime": end},
-        }
+        """`all_day` switches to Google's date form.
+
+        Google wants `date` rather than `dateTime` for all-day events, and treats the end date
+        as exclusive: a hold on the 21st ends on the 22nd. Sending the same day for both
+        creates a zero-length event that shows up nowhere.
+        """
+        if all_day:
+            start_day = start[:10]
+            end_day = end[:10]
+            if end_day <= start_day:
+                end_day = (datetime.strptime(start_day, "%Y-%m-%d") + timedelta(days=1)).strftime(
+                    "%Y-%m-%d"
+                )
+            body: dict[str, Any] = {
+                "summary": summary,
+                "start": {"date": start_day},
+                "end": {"date": end_day},
+            }
+        else:
+            body = {
+                "summary": summary,
+                "start": {"dateTime": start},
+                "end": {"dateTime": end},
+            }
         if location:
             body["location"] = location
         if description:
