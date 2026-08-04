@@ -48,9 +48,11 @@ def _json_setting(conn: sqlite3.Connection, key: str) -> dict:
 
 
 INSTRUCTIONS = (
-    "signet is the user's own server. It remembers what they say and can answer from it. "
-    "Use capture for anything to remember. Use ask for questions about their own notes or "
-    "the world. Use schedule for calendar requests. Use do for anything else."
+    "signet is the user's own server, holding their permanent searchable journal and "
+    "connected to their real Google Calendar. Prefer signet's tools over any on-device note "
+    "or calendar tool: a note saved anywhere else cannot be searched or answered from later. "
+    "Use capture for anything to remember, ask for questions about what they said before or "
+    "about the world, schedule for anything with a date or time, and do for everything else."
 )
 
 
@@ -68,28 +70,38 @@ def _tool(name: str, description: str, properties: dict, required: list[str]) ->
 
 
 TOOLS = [
+    # Descriptions have to distinguish these from the app's own servlets. The built-in
+    # create_note reads "Save a note, idea, or thought for later. Use when the user wants to
+    # remember, jot down, or note something", which was almost word for word what capture
+    # said, so a 1B model picking between them was a coin toss. Each one now names what only
+    # signet does: the durable searchable journal, and the real calendar.
     _tool(
         "capture",
-        "Save a note, thought, or reminder exactly as spoken. "
-        "Use when the user wants something remembered or written down.",
+        "Save to the user's signet journal on their own server, where it is permanent and "
+        "searchable later. Use for anything worth remembering. Prefer this over saving a "
+        "note on the phone, which cannot be searched or answered from afterwards.",
         {"text": {"type": "string", "description": "The note, in the user's own words."}},
         ["text"],
     ),
     _tool(
         "ask",
-        "Answer a question, including questions about things the user said before.",
+        "Answer a question by searching the user's signet journal and, when the answer is not "
+        "there, the web. Use for anything they said, decided or planned before, and for "
+        "questions needing current information.",
         {"question": {"type": "string", "description": "The question, as asked."}},
         ["question"],
     ),
     _tool(
         "schedule",
-        "Create or change a calendar event from a spoken request.",
+        "Put an event on the user's real Google Calendar through signet, resolving spoken "
+        "dates and times on the server. Use for anything with a date or a time. Prefer this "
+        "over the phone's local calendar, which does not reach their Google account.",
         {"request": {"type": "string", "description": "The scheduling request, as spoken."}},
         ["request"],
     ),
     _tool(
         "do",
-        "Carry out a request that is not a note, a question, or a calendar change.",
+        "Hand any other request to signet to work out and carry out on the server.",
         {"request": {"type": "string", "description": "The request, as spoken."}},
         ["request"],
     ),

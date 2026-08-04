@@ -242,3 +242,20 @@ def test_resources_are_advertised_and_empty(legacy: LegacyClient):
     assert "resources" in capabilities
     legacy.initialized()
     assert legacy.call("resources/list", id_=7)["result"]["resources"] == []
+
+
+def test_tool_descriptions_do_not_read_like_the_builtins(legacy: LegacyClient):
+    """The app ships its own create_note: "Save a note, idea, or thought for later. Use when
+    the user wants to remember, jot down, or note something." capture said almost the same
+    thing, so a 1B on-device model choosing between them was a coin toss, and it often picked
+    the built-in. Each description must name something only signet does.
+    """
+    legacy.initialize()
+    legacy.initialized()
+    tools = {t["name"]: t["description"] for t in legacy.call("tools/list")["result"]["tools"]}
+
+    assert "journal" in tools["capture"].lower()
+    assert "signet" in tools["capture"].lower()
+    assert "google calendar" in tools["schedule"].lower()
+    for description in tools.values():
+        assert len(description) > 60, "too terse to compete with a built-in"

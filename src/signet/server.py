@@ -30,6 +30,10 @@ PROMPTS = [types.Prompt(name=name, description=PROMPT_DESCRIPTIONS[name]) for na
 
 def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
     async def on_list_tools(ctx: object, params: object) -> types.ListToolsResult:
+        # Logged because the gap between "listed the tools" and "called one" is the hardest
+        # thing to see from outside: a client that lists and never calls means the on-device
+        # model chose something else, which looks identical to signet being broken.
+        logger.info("tools/list -> %s", ", ".join(t.name for t in TOOLS))
         # No nextCursor, ever. The Pebble client hits `TODO("Handle pagination")` and throws
         # if one is present (docs/00-research.md section 2). One page, four verbs.
         return types.ListToolsResult(tools=TOOLS)
@@ -50,6 +54,7 @@ def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
                 is_error=True,
             )
 
+        logger.info("tools/call %s <- %r", params.name, text[:80])
         request = Request(text=text, source="mcp:ring", client=principal, verb=params.name)
         conn = db.connect(cfg.db_path)
         try:
@@ -68,6 +73,7 @@ def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
         they want, and the text is concatenated into the on-device model's context, so this is
         a second free channel alongside `instructions`.
         """
+        logger.info("prompts/list -> %s", ", ".join(p.name for p in PROMPTS))
         return types.ListPromptsResult(prompts=PROMPTS)
 
     async def on_get_prompt(
