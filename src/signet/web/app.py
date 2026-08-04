@@ -509,9 +509,11 @@ async def settings_page(request: Request) -> Response:
         selected_providers, allow_fallbacks = openrouter.read_provider_config(
             db.get_config(conn, "provider")
         )
-        # Ticked providers first, in their saved order, so the list reads as the routing order.
-        ordered = [p for p in selected_providers if p in providers]
-        ordered += [p for p in providers if p not in selected_providers]
+        # Providers carry a structured-output flag, so order by name rather than by object.
+        by_name = {p["name"]: p for p in providers}
+        # Ticked ones first, in their saved order, so the list reads as the routing order.
+        ordered = [by_name[name] for name in selected_providers if name in by_name]
+        ordered += [p for p in providers if p["name"] not in selected_providers]
         cached_at = db.get_setting(conn, openrouter.CACHE_AT_KEY, "0")
     finally:
         conn.close()
@@ -532,6 +534,11 @@ async def settings_page(request: Request) -> Response:
         providers=ordered,
         selected_providers=selected_providers,
         allow_fallbacks=allow_fallbacks,
+        # Warn only when the choice actually breaks something: picked providers, none of
+        # which can do structured output, and no fallback to rescue it.
+        picked_all_unstructured=bool(selected_providers)
+        and not allow_fallbacks
+        and not any(p["structured"] for p in ordered if p["name"] in selected_providers),
         cached_ago=_ago(cached_at),
     )
 
@@ -557,7 +564,16 @@ async def save_settings(request: Request) -> Response:
 
             # Checkbox values arrive in DOM order, which the up and down buttons control, so
             # the submitted order is the routing order.
-            order = [str(v) for v in form.getlist("provider_order") if v]
+            # Only real provider names. A rendering bug once put stringified objects in
+            # these values, and without this they would have been written straight into the
+            # routing config, where they would silently match no endpoint.
+            known = {
+                p["name"]
+                for p in await openrouter.fetch_providers(
+                    conn, db.get_config(conn, "model") or request.app.state.cfg.model
+                )
+            }
+            order = [str(v) for v in form.getlist("provider_order") if str(v) in known]
             allow_fallbacks = bool(form.get("allow_fallbacks"))
             provider_config = openrouter.build_provider_config(order, allow_fallbacks)
             if provider_config:
@@ -717,6 +733,25 @@ async def htmx_js(request: Request) -> Response:
     return Response(HTMX, media_type="application/javascript")
 
 
+# A signet: the band, and the seal face you press. Inline SVG so there is no binary asset to
+# manage and it stays crisp at any size.
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" fill="none"/>'
+    '<circle cx="16" cy="20" r="8.5" fill="none" stroke="#c1272d" stroke-width="3.5"/>'
+    '<rect x="10" y="3" width="12" height="10" rx="1.5" fill="#c1272d"/>'
+    "</svg>"
+)
+
+
+async def favicon(request: Request) -> Response:
+    return Response(
+        FAVICON,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 def build(cfg: Config) -> Starlette | None:
     """Returns None when no admin password is set, which leaves the portal unmounted.
 
@@ -749,6 +784,7 @@ def build(cfg: Config) -> Starlette | None:
         Route("/google/disconnect", google_disconnect, methods=["POST"]),
         Route("/kill", toggle_kill, methods=["POST"]),
         Route("/static/htmx.min.js", htmx_js),
+        Route("/favicon.svg", favicon),
     ]
     app = Starlette(
         routes=routes,

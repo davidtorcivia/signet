@@ -570,3 +570,64 @@ async def test_tokens_page_shows_what_the_ring_needs(client: httpx.AsyncClient):
     assert "https://signet.example.com/mcp" in body
     assert "Streamable" in body
     assert "including the word Bearer" in body
+
+
+async def test_saved_provider_order_is_shown_back(client: httpx.AsyncClient, cfg, catalogue):
+    """Saving then reopening showed nothing ticked. Providers gained a structured-output flag
+    and became objects, while the template still compared them as strings, so no checkbox
+    ever matched and the saved order was invisible."""
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "provider", json.dumps({"order": ["Novita", "DeepInfra"]}))
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+
+    assert 'value="Novita"' in body
+    assert "{'name'" not in body, "objects leaked into the form values"
+    # Ticked ones lead, in saved order, so the list reads as the routing order.
+    assert body.index('value="Novita"') < body.index('value="DeepInfra"')
+    assert body.index('value="DeepInfra"') < body.index('value="Fireworks"')
+    assert body.count("checked") >= 2
+
+
+async def test_unknown_provider_names_are_not_saved(client: httpx.AsyncClient, cfg, catalogue):
+    """Defence against the same class of bug: whatever the form sends, only real provider
+    names reach the routing config."""
+    await sign_in(client)
+    await client.post(
+        "/settings",
+        data={"provider_order": ["{'name': 'DeepInfra'}", "Novita", "Nonsense"]},
+    )
+
+    conn = db.connect(cfg.db_path)
+    stored = json.loads(db.get_config(conn, "provider"))
+    conn.close()
+    assert stored["order"] == ["Novita"]
+
+
+async def test_a_provider_without_structured_output_is_flagged(
+    client: httpx.AsyncClient, cfg, catalogue
+):
+    conn = db.connect(cfg.db_path)
+    db.set_setting(
+        conn,
+        "cache:openrouter_providers:deepseek/deepseek-v4-flash-0731",
+        json.dumps([{"name": "DeepSeek", "structured": False}]),
+    )
+    db.set_config(conn, "provider", json.dumps({"order": ["DeepSeek"], "allow_fallbacks": False}))
+    conn.close()
+
+    await sign_in(client)
+    body = (await client.get("/settings")).text
+
+    assert "no structured output" in body
+    assert "No endpoints found" in body, "the consequence should be spelled out"
+
+
+async def test_favicon_is_served(client: httpx.AsyncClient):
+    await sign_in(client)
+    response = await client.get("/favicon.svg")
+    assert response.status_code == 200
+    assert "image/svg+xml" in response.headers["content-type"]
+    assert "<svg" in response.text

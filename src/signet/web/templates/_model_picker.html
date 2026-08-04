@@ -43,12 +43,16 @@
   {% if providers %}
     <ul id="provider-list" style="list-style:none;padding:0;margin:0">
       {% for p in providers %}
-        <li data-provider="{{ p }}" class="item"
+        <li data-provider="{{ p.name }}" class="item"
             style="display:flex;align-items:center;gap:.6rem;padding:.5rem 0">
-          <input type="checkbox" name="provider_order" value="{{ p }}" id="prov-{{ loop.index }}"
+          <input type="checkbox" name="provider_order" value="{{ p.name }}"
+                 id="prov-{{ loop.index }}"
                  style="width:1.1rem;height:1.1rem;min-height:auto;flex:none"
-                 {{ 'checked' if p in selected_providers }}>
-          <label for="prov-{{ loop.index }}" style="flex:1">{{ p }}</label>
+                 {{ 'checked' if p.name in selected_providers }}>
+          <label for="prov-{{ loop.index }}" style="flex:1">
+            {{ p.name }}
+            {% if not p.structured %}<span class="tag bad">no structured output</span>{% endif %}
+          </label>
           <button type="button" class="quiet tiny move" data-dir="up" aria-label="Move up">&uarr;</button>
           <button type="button" class="quiet tiny move" data-dir="down" aria-label="Move down">&darr;</button>
         </li>
@@ -60,6 +64,13 @@
       <span>Allow other providers if these fail</span>
     </label>
     <div class="muted">Unticked means only the ticked providers are used.</div>
+    {% if picked_all_unstructured %}
+      <div class="notice bad" style="margin-top:.7rem">
+        None of the providers you picked can do structured output. Routing and scheduling ask
+        for a JSON schema, so with fallbacks off OpenRouter has no eligible endpoint and
+        answers "No endpoints found". Questions keep working, which makes it look intermittent.
+      </div>
+    {% endif %}
   {% else %}
     <div class="muted">No provider list yet. Save the model first, then reopen this page.</div>
   {% endif %}
