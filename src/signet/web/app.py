@@ -15,6 +15,7 @@ cannot.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import secrets
@@ -84,6 +85,7 @@ def _render(request: Request, template: str, **context: Any) -> HTMLResponse:
         context.setdefault("kill_switch", db.kill_switch_on(conn))
     finally:
         conn.close()
+    context.setdefault("favicon_version", FAVICON_VERSION)
     return TEMPLATES.TemplateResponse(request, template, context)
 
 
@@ -95,7 +97,9 @@ def _conn(request: Request):
 async def login_form(request: Request) -> Response:
     if _authed(request):
         return RedirectResponse("/app/", status_code=303)
-    return TEMPLATES.TemplateResponse(request, "login.html", {"error": None})
+    return TEMPLATES.TemplateResponse(
+        request, "login.html", {"error": None, "favicon_version": FAVICON_VERSION}
+    )
 
 
 async def login(request: Request) -> Response:
@@ -107,7 +111,10 @@ async def login(request: Request) -> Response:
         request.session["admin"] = True
         return RedirectResponse("/app/", status_code=303)
     return TEMPLATES.TemplateResponse(
-        request, "login.html", {"error": "Wrong password."}, status_code=401
+        request,
+        "login.html",
+        {"error": "Wrong password.", "favicon_version": FAVICON_VERSION},
+        status_code=401,
     )
 
 
@@ -757,11 +764,17 @@ FAVICON = (
 )
 
 
+# The URL carries a hash of the drawing, so changing it always busts the cache. Without this
+# Cloudflare kept serving the previous favicon from its edge for a month: it overrode the
+# max-age with its own default for static assets, and the redeploy looked like it had failed.
+FAVICON_VERSION = hashlib.sha256(FAVICON.encode()).hexdigest()[:8]
+
+
 async def favicon(request: Request) -> Response:
     return Response(
         FAVICON,
         media_type="image/svg+xml",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "public, max-age=604800"},
     )
 
 

@@ -690,3 +690,22 @@ async def test_clearing_a_field_ignores_its_submitted_value(
     conn = db.connect(cfg.db_path)
     assert db.get_config(conn, "model") is None
     conn.close()
+
+
+async def test_favicon_url_changes_when_the_drawing_does(client: httpx.AsyncClient):
+    """Cloudflare cached the previous favicon at its edge for a month, overriding the max-age
+    with its own default for static assets, so a redesign looked like a failed deploy."""
+    from signet.web.app import FAVICON, FAVICON_VERSION
+
+    await sign_in(client)
+    body = (await client.get("/")).text
+    assert f"/app/favicon.svg?v={FAVICON_VERSION}" in body
+
+    import hashlib
+
+    assert hashlib.sha256(FAVICON.encode()).hexdigest()[:8] == FAVICON_VERSION
+
+
+async def test_login_page_also_has_the_icon(client: httpx.AsyncClient):
+    response = await client.get("/login")
+    assert "/app/favicon.svg?v=" in response.text
