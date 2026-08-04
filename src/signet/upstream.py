@@ -71,6 +71,43 @@ def _leading_verb(tool_name: str) -> str:
     return _CAMEL.sub("_", tail).lower().strip("_").split("_")[0]
 
 
+AUTO = "auto"
+APPROVE = "approve"
+OFF = "off"
+POLICIES = (AUTO, APPROVE, OFF)
+
+
+def policy_of(row: sqlite3.Row) -> dict[str, str]:
+    try:
+        loaded = json.loads(row["tool_policy"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return {k: v for k, v in loaded.items() if v in POLICIES} if isinstance(loaded, dict) else {}
+
+
+def set_policy(conn: sqlite3.Connection, name: str, policy: dict[str, str]) -> None:
+    clean = {k: v for k, v in policy.items() if v in POLICIES}
+    with db.transaction(conn):
+        conn.execute(
+            "UPDATE upstreams SET tool_policy = ? WHERE name = ?", (json.dumps(clean), name)
+        )
+
+
+def decide(tool_name: str, upstream: Upstream, policy: dict[str, str]) -> str:
+    """What to do with one tool: run it, ask first, or leave it out.
+
+    An explicit choice always wins. The name heuristic is only a starting point, because
+    turn_on_light and unlock_door look identical to a schema and being asked to approve a
+    light is friction with no safety in it.
+    """
+    chosen = policy.get(tool_name)
+    if chosen in POLICIES:
+        return chosen
+    if upstream.approve_all:
+        return APPROVE
+    return AUTO if looks_read_only(tool_name) else APPROVE
+
+
 def looks_read_only(tool_name: str) -> bool:
     return _leading_verb(tool_name) in READ_VERBS
 
@@ -215,9 +252,9 @@ async def call_tool(upstream: Upstream, tool: str, args: dict[str, Any]) -> tupl
     return "\n".join(parts).strip() or "Done.", bool(result.is_error)
 
 
-def build_capability(upstream: Upstream, tool: dict) -> Capability:
+def build_capability(upstream: Upstream, tool: dict, mode: str = APPROVE) -> Capability:
     name = f"{upstream.name}.{tool['name']}"
-    destructive = upstream.approve_all or not looks_read_only(tool["name"])
+    destructive = mode == APPROVE
 
     async def handler(request: Request, args: PassthroughArgs) -> Outcome:
         payload = args.model_dump(mode="json", exclude_none=True)
@@ -266,10 +303,12 @@ def mount(registry, conn: sqlite3.Connection) -> list[str]:
     mounted: list[str] = []
     for row in list_upstreams(conn, enabled_only=True):
         upstream = from_row(row)
+        policy = policy_of(row)
         for tool in cached_tools(row):
-            if upstream.allow_tools and tool["name"] not in upstream.allow_tools:
+            mode = decide(tool["name"], upstream, policy)
+            if mode == OFF:
                 continue
-            capability = build_capability(upstream, tool)
+            capability = build_capability(upstream, tool, mode)
             if registry.get(capability.name) is not None:
                 continue
             registry.register(capability)

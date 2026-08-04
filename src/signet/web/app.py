@@ -36,7 +36,7 @@ from starlette.templating import Jinja2Templates
 
 from .. import db, google, openrouter, prompts, upstream
 from ..config import Config
-from ..registry import get_registry, run_approved
+from ..registry import get_registry, reload_upstreams, run_approved
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -796,13 +796,19 @@ async def upstreams(request: Request) -> Response:
     conn = _conn(request)
     try:
         rows = upstream.list_upstreams(conn)
-        tools_by_name = {
-            row["name"]: [
-                {"name": t["name"], "read_only": upstream.looks_read_only(t["name"])}
+        tools_by_name = {}
+        for row in rows:
+            policy = upstream.policy_of(row)
+            server = upstream.from_row(row)
+            tools_by_name[row["name"]] = [
+                {
+                    "name": t["name"],
+                    "description": (t.get("description") or "")[:90],
+                    "mode": upstream.decide(t["name"], server, policy),
+                    "chosen": t["name"] in policy,
+                }
                 for t in upstream.cached_tools(row)
             ]
-            for row in rows
-        }
     finally:
         conn.close()
     return _render(
@@ -827,6 +833,7 @@ async def _connect(conn, name: str) -> tuple[int, str | None]:
         upstream.record_failure(conn, name, str(exc))
         return 0, f"Could not reach {name}: {str(exc)[:200]}"
     upstream.record_tools(conn, name, tools)
+    reload_upstreams(conn)
     return len(tools), None
 
 
@@ -892,6 +899,7 @@ async def toggle_upstream(request: Request) -> Response:
                 "UPDATE upstreams SET enabled = ? WHERE name = ?",
                 (0 if row["enabled"] else 1, row["name"]),
             )
+        reload_upstreams(conn)
     finally:
         conn.close()
     return RedirectResponse("/app/upstreams", status_code=303)
@@ -903,8 +911,30 @@ async def remove_upstream(request: Request) -> Response:
     conn = _conn(request)
     try:
         upstream.delete_upstream(conn, request.path_params["name"])
+        reload_upstreams(conn)
     finally:
         conn.close()
+    return RedirectResponse("/app/upstreams", status_code=303)
+
+
+async def set_tool_policy(request: Request) -> Response:
+    """Save the per-tool choices for one server."""
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    name = request.path_params["name"]
+    policy = {
+        key[len("tool:") :]: str(value)
+        for key, value in form.items()
+        if key.startswith("tool:") and str(value) in upstream.POLICIES
+    }
+    conn = _conn(request)
+    try:
+        upstream.set_policy(conn, name, policy)
+        reload_upstreams(conn)
+    finally:
+        conn.close()
+    request.session["upstream_note"] = f"{name}: saved, and in effect now."
     return RedirectResponse("/app/upstreams", status_code=303)
 
 
@@ -987,6 +1017,7 @@ def build(cfg: Config) -> Starlette | None:
         Route("/upstreams/{name}/refresh", refresh_upstream, methods=["POST"]),
         Route("/upstreams/{name}/toggle", toggle_upstream, methods=["POST"]),
         Route("/upstreams/{name}/delete", remove_upstream, methods=["POST"]),
+        Route("/upstreams/{name}/policy", set_tool_policy, methods=["POST"]),
         Route("/approvals", approvals),
         Route("/approvals/{job_id}/approve", approve, methods=["POST"]),
         Route("/approvals/{job_id}/deny", deny, methods=["POST"]),

@@ -27,8 +27,8 @@
       <span>Trust its output. Leave off and results are treated as untrusted, which stops the
       agent acting on anything it read from this server.</span></label>
     <label class="check"><input type="checkbox" name="approve_all" value="1" checked>
-      <span>Require approval for every tool. Untick to let obviously read-only tools run
-      straight away.</span></label>
+      <span>Start by requiring approval for every tool. You can then let individual ones run
+      directly, which is the point: approving a light is friction with no safety in it.</span></label>
     <div style="margin-top:.6rem"><button>Add and connect</button></div>
   </form>
 </div>
@@ -63,15 +63,29 @@
         &middot; scope <span class="mono">mcp:{{ row.name }}</span>
       </div>
       {% if tools %}
-        <div class="muted" style="margin-top:.3rem">
-          {% for t in tools[:12] %}
-            <span class="tag {{ '' if t.read_only else 'bad' }}">{{ t.name }}</span>
-          {% endfor %}
-          {% if tools|length > 12 %}<span class="label">and {{ tools|length - 12 }} more</span>{% endif %}
-        </div>
-        <div class="muted" style="margin-top:.35rem">
-          Marked ones need approval before they run.
-        </div>
+        <form method="post" action="/app/upstreams/{{ row.name }}/policy" style="margin-top:.5rem">
+          <table style="width:100%;border-collapse:collapse">
+            {% for t in tools %}
+              <tr style="border-bottom:1px dotted var(--line)">
+                <td style="padding:.4rem .5rem .4rem 0">
+                  <span class="mono" style="font-size:.82rem">{{ t.name }}</span>
+                  {% if t.chosen %}<span class="label">set</span>{% endif %}
+                  {% if t.description %}
+                    <div class="muted" style="font-size:.76rem">{{ t.description }}</div>
+                  {% endif %}
+                </td>
+                <td style="width:11rem;padding:.4rem 0">
+                  <select name="tool:{{ t.name }}" style="min-height:38px">
+                    <option value="auto" {{ 'selected' if t.mode == 'auto' }}>Run directly</option>
+                    <option value="approve" {{ 'selected' if t.mode == 'approve' }}>Ask me first</option>
+                    <option value="off" {{ 'selected' if t.mode == 'off' }}>Not available</option>
+                  </select>
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+          <div style="margin-top:.6rem"><button class="tiny">Save tool settings</button></div>
+        </form>
       {% endif %}
 
       <div class="row" style="margin-top:.6rem">

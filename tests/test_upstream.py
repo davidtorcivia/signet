@@ -215,3 +215,64 @@ async def test_a_failing_call_says_which_server(conn, monkeypatch):
     assert outcome.is_error
     assert "home" in outcome.output
     assert "connection refused" in (outcome.error or "")
+
+
+def test_a_choice_beats_the_guess(conn):
+    """Being asked to approve a light is friction with no safety in it, so an explicit choice
+    always wins over the name heuristic."""
+    add_home(conn)
+    upstream.set_policy(conn, "home", {"turn_on_light": "auto", "get_state": "approve"})
+
+    registry = Registry()
+    upstream.mount(registry, conn)
+
+    assert registry.get("home.turn_on_light").destructive is False
+    assert registry.get("home.get_state").destructive is True
+    # Untouched tools keep the default.
+    assert registry.get("home.unlock_door").destructive is True
+
+
+def test_a_tool_can_be_switched_off(conn):
+    add_home(conn)
+    upstream.set_policy(conn, "home", {"unlock_door": "off"})
+
+    registry = Registry()
+    upstream.mount(registry, conn)
+    assert registry.get("home.unlock_door") is None
+    assert registry.get("home.get_state") is not None
+
+
+def test_a_choice_survives_approve_all(conn):
+    """Requiring approval everywhere is a starting point, not a cage."""
+    add_home(conn, approve_all=True)
+    upstream.set_policy(conn, "home", {"turn_on_light": "auto"})
+
+    registry = Registry()
+    upstream.mount(registry, conn)
+    assert registry.get("home.turn_on_light").destructive is False
+    assert registry.get("home.get_state").destructive is True
+
+
+def test_nonsense_policy_values_are_ignored(conn):
+    add_home(conn)
+    upstream.set_policy(conn, "home", {"turn_on_light": "whatever"})
+
+    registry = Registry()
+    upstream.mount(registry, conn)
+    assert registry.get("home.turn_on_light").destructive is True
+
+
+def test_remounting_replaces_rather_than_duplicates(conn):
+    """Changing what a tool may do takes effect on the next request, not the next restart."""
+    from signet.registry import get_registry, reload_upstreams
+
+    add_home(conn)
+    reload_upstreams(conn)
+    assert get_registry().get("home.turn_on_light").destructive is True
+
+    upstream.set_policy(conn, "home", {"turn_on_light": "auto"})
+    reload_upstreams(conn)
+
+    assert get_registry().get("home.turn_on_light").destructive is False
+    # Built-ins are untouched by a remount.
+    assert get_registry().get("journal.write") is not None

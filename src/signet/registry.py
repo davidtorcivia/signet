@@ -39,6 +39,16 @@ class Registry:
             raise ValueError(f"duplicate capability: {capability.name}")
         self._capabilities[capability.name] = capability
 
+    def unregister(self, name: str) -> None:
+        self._capabilities.pop(name, None)
+
+    def drop_upstreams(self) -> list[str]:
+        """Remove everything mounted from a remote server, leaving built-ins alone."""
+        names = [c.name for c in self.all() if c.metadata.get("upstream")]
+        for name in names:
+            self.unregister(name)
+        return names
+
     def discover(self, package: str = DEFAULT_PACKAGE) -> list[str]:
         """Import every submodule of `package` and collect its CAPABILITIES list.
 
@@ -188,13 +198,28 @@ _registry: Registry | None = None
 
 
 def get_registry() -> Registry:
-    """Process-wide registry, built once."""
+    """The one registry, shared by the MCP surface and the portal.
+
+    Two of them was a real bug rather than a tidiness point: approving a queued upstream job
+    in the portal looked up a capability that only the server's copy had mounted, so the tap
+    failed with "no such capability".
+    """
     global _registry
     if _registry is None:
         registry = Registry()
         registry.discover()
         _registry = registry
     return _registry
+
+
+def reload_upstreams(conn: sqlite3.Connection) -> list[str]:
+    """Remount every server's tools. Called after any change, so editing what a tool is
+    allowed to do takes effect on the next request rather than the next restart."""
+    from . import upstream
+
+    registry = get_registry()
+    registry.drop_upstreams()
+    return upstream.mount(registry, conn)
 
 
 async def run_approved(

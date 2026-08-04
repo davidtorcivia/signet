@@ -13,12 +13,12 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config as config_module
-from . import coreschema, db, upstream
+from . import coreschema, db
 from .auth import BearerAuthMiddleware, DbTokenVerifier, Principal
 from .config import Config
 from .envelope import Request
 from .llm import LLM
-from .registry import Registry
+from .registry import get_registry, reload_upstreams
 from .router import Router
 from .verbs import INSTRUCTIONS, PROMPT_DESCRIPTIONS, PROMPT_TEXT, TOOLS, Verbs
 from .web import app as web_app
@@ -196,11 +196,11 @@ def init_storage(cfg: Config) -> None:
 
 
 def build_verbs(cfg: Config) -> Verbs:
-    registry = Registry()
-    registry.discover()
+    # The shared registry, so the portal and the ring see the same capabilities.
+    registry = get_registry()
     conn = db.connect(cfg.db_path)
     try:
-        upstream.mount(registry, conn)
+        reload_upstreams(conn)
     finally:
         conn.close()
     llm = LLM(cfg.openrouter_api_key, model=cfg.model)
