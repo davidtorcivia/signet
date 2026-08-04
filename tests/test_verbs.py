@@ -14,7 +14,7 @@ import pytest
 
 from signet import config, coreschema, db
 from signet.auth import Principal
-from signet.envelope import Request
+from signet.envelope import Outcome, Request
 from signet.llm import LLM, Completion, LLMUnavailable
 from signet.registry import Registry
 from signet.router import Router
@@ -392,3 +392,93 @@ async def test_notes_win_over_freshness_markers(cfg, conn):
 
     assert llm.calls == 1
     assert outcome.data["sources"] == []
+
+
+async def _queue_destructive(cfg, conn, verbs, text="unlock the front door"):
+    from pydantic import BaseModel
+
+    from signet.capability import Capability
+
+    class Args(BaseModel):
+        text: str
+
+    ran = []
+
+    async def handler(request, args):
+        ran.append(args.text)
+        return Outcome(output="Unlocked.", semantic=coreschema.response("Unlocked."))
+
+    verbs.registry.register(
+        Capability(
+            name="home.unlock",
+            description="Unlock the front door",
+            schema=Args,
+            handler=handler,
+            scopes=("journal:write",),
+            destructive=True,
+        )
+    )
+    queued = await verbs.registry.invoke(conn, ring_request(text), "home.unlock", {"text": text})
+    return ran, queued
+
+
+async def test_saying_yes_approves_the_waiting_action(cfg, conn):
+    """There is no way for signet to reach the phone first, so approval happens in band on the
+    next press. The ring is already talking to signet constantly."""
+    verbs = build(cfg, LLM(api_key=None))
+    ran, _ = await _queue_destructive(cfg, conn, verbs)
+    assert ran == []
+
+    outcome = await verbs.call(conn, "capture", ring_request("yes"))
+
+    assert ran == ["unlock the front door"]
+    assert db.pending_approvals(conn) == []
+    assert not outcome.is_error
+
+
+async def test_saying_no_cancels_it(cfg, conn):
+    verbs = build(cfg, LLM(api_key=None))
+    ran, _ = await _queue_destructive(cfg, conn, verbs)
+
+    outcome = await verbs.call(conn, "capture", ring_request("no"))
+
+    assert ran == []
+    assert db.pending_approvals(conn) == []
+    assert "cancelled" in coreschema.headline(outcome.semantic).lower()
+
+
+async def test_a_yes_inside_a_sentence_is_not_consent(cfg, conn):
+    """ "Yes, remember to call the lab" is a note. Reading it as approval for something
+    destructive is the one mistake that must not happen."""
+    verbs = build(cfg, LLM(api_key=None))
+    ran, _ = await _queue_destructive(cfg, conn, verbs)
+
+    await verbs.call(conn, "capture", ring_request("yes remember to call the lab"))
+
+    assert ran == []
+    assert len(db.pending_approvals(conn)) == 1, "still waiting"
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == [
+        "yes remember to call the lab"
+    ]
+
+
+async def test_yes_with_nothing_waiting_is_just_a_note(cfg, conn):
+    verbs = build(cfg, LLM(api_key=None))
+    await verbs.call(conn, "capture", ring_request("yes"))
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["yes"]
+
+
+async def test_two_waiting_approvals_refuse_to_guess(cfg, conn):
+    """With two pending, "yes" does not say which, and guessing at something destructive is
+    the one place guessing is unacceptable."""
+    verbs = build(cfg, LLM(api_key=None))
+    ran, _ = await _queue_destructive(cfg, conn, verbs)
+    db.queue_approval(
+        conn, capability="home.unlock", args={"text": "back door"}, title="Unlock the back door"
+    )
+
+    outcome = await verbs.call(conn, "capture", ring_request("yes"))
+
+    assert ran == []
+    assert len(db.pending_approvals(conn)) == 2
+    assert "more than one" in coreschema.headline(outcome.semantic).lower()

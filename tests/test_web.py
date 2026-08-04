@@ -713,12 +713,13 @@ async def test_login_page_also_has_the_icon(client: httpx.AsyncClient):
 
 async def _queue_one(cfg, text="unlock the front door"):
     """Park a destructive call the way a ring request would."""
+    from pydantic import BaseModel
+
     from signet import coreschema
     from signet.auth import Principal
     from signet.capability import Capability
     from signet.envelope import Outcome, Request
     from signet.registry import Registry
-    from pydantic import BaseModel
 
     class Args(BaseModel):
         text: str

@@ -23,12 +23,13 @@ from datetime import datetime
 
 import mcp.types as types
 
-from . import coreschema, db, google, prompts
+from . import agent, coreschema, db, google, prompts
 from .config import Config
+from .confirm import is_confirmation, is_refusal
 from .envelope import Outcome, Request
 from .llm import LLM, LLMUnavailable
-from .registry import Registry
-from .router import Router
+from .registry import Registry, run_approved
+from .router import Router, apply_rules, load_rules
 
 logger = logging.getLogger("signet.verbs")
 
@@ -543,14 +544,59 @@ class Verbs:
         )
 
     async def do(self, conn: sqlite3.Connection, request: Request) -> Outcome:
-        router = Router(self._llm_for(conn), rules_path=self.router.rules_path)
-        router.system_prompt = prompts.get(conn, "prompt_router")
-        plan = await router.route(request.text, self._catalogue(request.scopes))
-        logger.info("do -> %s (%s)", plan.capability, plan.reason)
-        if not plan.capability:
+        """Rules first, then the agent loop.
+
+        A matched rule is free and predictable, so "remember the fixer is low" never pays for
+        a model. What falls through goes to the loop, which can chain steps: "move my 3pm and
+        tell Sarah" is three calls, and the single-capability router could only ever do one.
+        """
+        llm = self._llm_for(conn)
+        rules = load_rules(self.router.rules_path)
+        planned = apply_rules(request.text, rules)
+        if planned is not None:
+            logger.info("do -> %s (%s)", planned.capability, planned.reason)
+            outcome = await self._run(conn, request, planned.capability, planned.args)
+            outcome.data = {"plan": planned.as_dict(), "result": outcome.data}
+            return outcome
+
+        if not llm.available or not self._budget_left(conn):
+            # No model and no rule. Keeping the words beats guessing.
             return await self.capture(conn, request)
-        outcome = await self._run(conn, request, plan.capability, plan.args)
-        outcome.data = {"plan": plan.as_dict(), "result": outcome.data}
+
+        outcome, trace = await agent.run(conn, self.registry, llm, request)
+        logger.info(
+            "do ran %d step(s), stopped because %s", len(trace.steps), trace.stopped_because
+        )
+        return outcome
+
+    async def _decide(
+        self, conn: sqlite3.Connection, request: Request, pending: list
+    ) -> Outcome | None:
+        """Answer a waiting approval by voice.
+
+        Only when exactly one thing is waiting. With two, "yes" does not say which, and
+        guessing at something marked destructive is the one place guessing is unacceptable.
+        """
+        if len(pending) != 1:
+            titles = " or ".join(job["title"] for job in pending[:2])
+            message = f"More than one thing is waiting. Approve in the app: {titles}"
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=False),
+            )
+
+        job = pending[0]
+        if is_refusal(request.text):
+            db.decide_job(conn, job["id"], "denied", "voice")
+            message = f"Cancelled: {job['title']}"
+            logger.info("denied %s by voice", job["id"])
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=True),
+            )
+
+        logger.info("approving %s by voice", job["id"])
+        outcome = await run_approved(self.registry, conn, job["id"], by="voice")
         return outcome
 
     # --- dispatch -----------------------------------------------------------------
@@ -572,6 +618,14 @@ class Verbs:
                 ),
                 is_error=True,
             )
+
+        # A bare "yes" is almost never a note. Checked before dispatch so it works whichever
+        # verb the on-device model happened to pick.
+        pending = db.pending_approvals(conn, limit=2)
+        if pending and (is_confirmation(request.text) or is_refusal(request.text)):
+            decided = await self._decide(conn, request, pending)
+            if decided is not None:
+                return decided
 
         started = time.monotonic()
         request_id = db.start_request(
