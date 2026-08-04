@@ -20,10 +20,12 @@ from .envelope import Request
 from .llm import LLM
 from .registry import Registry
 from .router import Router
-from .verbs import INSTRUCTIONS, TOOLS, Verbs
+from .verbs import INSTRUCTIONS, PROMPT_DESCRIPTIONS, PROMPT_TEXT, TOOLS, Verbs
 from .web import app as web_app
 
 logger = logging.getLogger("signet")
+
+PROMPTS = [types.Prompt(name=name, description=PROMPT_DESCRIPTIONS[name]) for name in PROMPT_TEXT]
 
 
 def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
@@ -57,12 +59,51 @@ def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
 
         return coreschema.result(outcome.output, outcome.semantic, is_error=outcome.is_error)
 
+    async def on_list_prompts(ctx: object, params: object) -> types.ListPromptsResult:
+        """The Pebble app calls prompts/list during setup and refuses to connect to a server
+        that does not advertise the capability, so this is not optional for the ring.
+
+        Every prompt here takes no arguments, because the app filters to
+        `arguments == null` and would silently hide anything else. The user ticks which ones
+        they want, and the text is concatenated into the on-device model's context, so this is
+        a second free channel alongside `instructions`.
+        """
+        return types.ListPromptsResult(prompts=PROMPTS)
+
+    async def on_get_prompt(
+        ctx: object, params: types.GetPromptRequestParams
+    ) -> types.GetPromptResult:
+        text = PROMPT_TEXT.get(params.name)
+        if text is None:
+            return types.GetPromptResult(
+                messages=[
+                    types.PromptMessage(
+                        role="user",
+                        content=types.TextContent(type="text", text="Unknown prompt."),
+                    )
+                ]
+            )
+        return types.GetPromptResult(
+            description=PROMPT_DESCRIPTIONS.get(params.name),
+            messages=[
+                types.PromptMessage(role="user", content=types.TextContent(type="text", text=text))
+            ],
+        )
+
+    async def on_list_resources(ctx: object, params: object) -> types.ListResourcesResult:
+        """Advertised and empty. signet exposes no resources, but a client that probes for
+        them should get an empty list rather than a capability error."""
+        return types.ListResourcesResult(resources=[])
+
     return Server(
         "signet",
         version="0.2.0",
         instructions=INSTRUCTIONS,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
+        on_list_prompts=on_list_prompts,
+        on_get_prompt=on_get_prompt,
+        on_list_resources=on_list_resources,
     )
 
 

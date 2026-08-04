@@ -97,6 +97,27 @@ TOOLS = [
 
 ARG_NAMES = {"capture": "text", "ask": "question", "schedule": "request", "do": "request"}
 
+# Prompts the Pebble app can offer the user to tick. No arguments on any of them: the app
+# filters to `arguments == null` and would silently hide anything else. Their text is
+# concatenated into the on-device model's context, so this is a nudge about when to reach for
+# signet at all, not instructions for signet itself.
+PROMPT_TEXT = {
+    "signet-usage": (
+        "signet is the user's own server and remembers everything they say. Send anything "
+        "worth remembering to capture, even in passing. For questions about what the user "
+        "said, decided, or planned before, use ask rather than answering from memory."
+    ),
+    "signet-calendar": (
+        "For anything involving a time, a date, or a meeting, use schedule and pass the "
+        "request in the user's own words. Do not reformat the date yourself."
+    ),
+}
+
+PROMPT_DESCRIPTIONS = {
+    "signet-usage": "Tell the assistant when to use signet.",
+    "signet-calendar": "Route anything with a time to signet's calendar.",
+}
+
 # Appended in code rather than kept in the editable prompt, so editing the voice and tone
 # cannot accidentally disable the mechanism that decides whether to spend money on a search.
 NEEDS_WEB = "NEED_SEARCH"

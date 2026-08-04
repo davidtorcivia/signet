@@ -196,3 +196,49 @@ def test_session_teardown_still_works(server: str, legacy: LegacyClient):
         timeout=10,
     )
     assert response.status_code < 500
+
+
+def test_prompts_capability_is_advertised(legacy: LegacyClient):
+    """The app calls prompts/list during setup and refuses to connect to a server that has
+    not advertised the capability: "Server does not support prompts (required for
+    PromptsList)". Tools alone are not enough for the ring.
+    """
+    capabilities = legacy.initialize()["result"]["capabilities"]
+    assert "prompts" in capabilities
+
+
+def test_prompts_list_returns_only_argumentless_prompts(legacy: LegacyClient):
+    """The app filters to `arguments == null`, so anything taking arguments is silently
+    invisible. Better to have none than to ship a prompt nobody can see."""
+    legacy.initialize()
+    legacy.initialized()
+    prompts = legacy.call("prompts/list")["result"]["prompts"]
+
+    assert prompts, "advertising the capability with nothing in it wastes a free channel"
+    for prompt in prompts:
+        assert not prompt.get("arguments"), f"{prompt['name']} would be hidden by the app"
+        assert prompt.get("description")
+
+
+def test_a_prompt_can_be_fetched(legacy: LegacyClient):
+    legacy.initialize()
+    legacy.initialized()
+    name = legacy.call("prompts/list")["result"]["prompts"][0]["name"]
+    result = legacy.call("prompts/get", {"name": name}, id_=5)["result"]
+
+    assert result["messages"][0]["content"]["text"].strip()
+
+
+def test_unknown_prompt_does_not_crash(legacy: LegacyClient):
+    legacy.initialize()
+    legacy.initialized()
+    result = legacy.call("prompts/get", {"name": "nope"}, id_=6)["result"]
+    assert result["messages"]
+
+
+def test_resources_are_advertised_and_empty(legacy: LegacyClient):
+    """A client that probes for resources should get an empty list, not a capability error."""
+    capabilities = legacy.initialize()["result"]["capabilities"]
+    assert "resources" in capabilities
+    legacy.initialized()
+    assert legacy.call("resources/list", id_=7)["result"]["resources"] == []
