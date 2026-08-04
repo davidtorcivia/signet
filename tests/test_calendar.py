@@ -403,3 +403,49 @@ async def test_partial_failure_still_reports_what_landed(cfg, conn, monkeypatch)
     assert outcome.data["created"] == 1
     assert outcome.data["failed"] == 1
     assert "failed" in coreschema.headline(outcome.semantic)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # What the model actually returned: "title" where the schema said "summary".
+        {"events": [{"title": "Coffee", "start": "2026-08-07T15:00:00-04:00"}]},
+        {"events": [{"name": "Coffee", "start_time": "2026-08-07T15:00:00-04:00"}]},
+        # A single event without the wrapper.
+        {"summary": "Coffee", "start": "2026-08-07T15:00:00-04:00"},
+        # The wrapper holding one object rather than a list.
+        {"events": {"summary": "Coffee", "when": "2026-08-07T15:00:00-04:00"}},
+    ],
+)
+def test_events_are_read_out_of_whatever_shape_arrives(data):
+    """Strictness throws away good answers. A reply with the right date under the wrong key
+    is a correct answer in the wrong clothes, and rejecting it tells the user signet could
+    not work out a time it understood perfectly."""
+    from signet.verbs import normalise_events
+
+    events = normalise_events(data)
+    assert len(events) == 1
+    assert events[0]["summary"] == "Coffee"
+    assert events[0]["start"].startswith("2026-08-07")
+
+
+def test_all_day_is_inferred_from_a_bare_date():
+    from signet.verbs import normalise_events
+
+    events = normalise_events({"events": [{"summary": "Adobe hold", "start": "2026-08-21"}]})
+    assert events[0]["all_day"] is True
+    assert events[0]["end"] == "2026-08-21"
+
+    timed = normalise_events(
+        {"events": [{"summary": "Coffee", "start": "2026-08-07T15:00:00-04:00"}]}
+    )
+    assert timed[0]["all_day"] is False
+
+
+def test_junk_is_still_rejected():
+    from signet.verbs import normalise_events
+
+    assert normalise_events(None) == []
+    assert normalise_events({}) == []
+    assert normalise_events({"events": [{"summary": "no date"}]}) == []
+    assert normalise_events({"events": ["not an object"]}) == []

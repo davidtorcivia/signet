@@ -160,6 +160,69 @@ def looks_time_sensitive(text: str) -> bool:
     return bool(_TIME_SENSITIVE.search(text))
 
 
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Field names the model actually uses, as opposed to the ones it was asked for. Without
+# response_format there is no guarantee of key names, and a real reply came back with "title"
+# where the schema said "summary", which dropped the event entirely.
+_ALIASES = {
+    "summary": ("summary", "title", "name", "subject", "event"),
+    "start": ("start", "start_time", "startTime", "start_date", "startDate", "date", "when"),
+    "end": ("end", "end_time", "endTime", "end_date", "endDate", "until"),
+    "location": ("location", "place", "where", "venue"),
+    "all_day": ("all_day", "allDay", "isAllDay", "full_day", "fullDay", "allday"),
+}
+
+
+def _pick(raw: dict, field: str):
+    for key in _ALIASES[field]:
+        if key in raw and raw[key] not in (None, ""):
+            return raw[key]
+    return None
+
+
+def normalise_events(data: dict | None) -> list[dict]:
+    """Read events out of whatever shape the model produced.
+
+    Being strict here throws away good answers. A reply naming the right dates but calling the
+    field "title" is a correct answer in the wrong clothes, and refusing it means the user
+    hears "couldn't work out the time" about a request the model understood perfectly.
+    """
+    if not isinstance(data, dict):
+        return []
+
+    raw = data.get("events")
+    if isinstance(raw, dict):
+        raw = [raw]
+    elif not isinstance(raw, list):
+        # A single event returned bare, without the wrapper.
+        raw = [data] if _pick(data, "summary") else []
+
+    events = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        summary = _pick(item, "summary")
+        start = _pick(item, "start")
+        if not summary or not start:
+            continue
+        start = str(start)
+        end = str(_pick(item, "end") or start)
+        flag = _pick(item, "all_day")
+        # Infer it when unstated: a bare date carries no time, so it can only be all-day.
+        all_day = bool(flag) if flag is not None else bool(_DATE_ONLY.match(start))
+        events.append(
+            {
+                "summary": str(summary),
+                "start": start,
+                "end": end,
+                "all_day": all_day,
+                "location": _pick(item, "location"),
+            }
+        )
+    return events
+
+
 # A list, because one spoken sentence often means several events: "holds for Adobe on the
 # 21st, 22nd and 24th" is three. Asked for a single object the model either picked one date or
 # invented a span across all of them.
@@ -418,9 +481,7 @@ class Verbs:
                 semantic=coreschema.action_logged("signet", message, success=False),
             )
 
-        parsed = completion.data or {}
-        events = [e for e in (parsed.get("events") or []) if isinstance(e, dict)]
-        events = [e for e in events if e.get("summary") and e.get("start")]
+        events = normalise_events(completion.data)
         if not events:
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
             message = "Couldn't work out the time, saved to your journal"
@@ -436,13 +497,7 @@ class Verbs:
                 conn,
                 request,
                 "calendar.create_event",
-                {
-                    "summary": event["summary"],
-                    "start": event["start"],
-                    "end": event.get("end") or event["start"],
-                    "location": event.get("location"),
-                    "all_day": bool(event.get("all_day")),
-                },
+                event,
             )
             if outcome.is_error:
                 failed += 1
