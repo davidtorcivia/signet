@@ -27,9 +27,13 @@ ROUTER = (
 )
 
 SCHEDULE = (
-    "You turn a spoken scheduling request into a calendar event. Today's date and the user's "
-    "timezone are given. Resolve relative dates like 'Friday' or 'tomorrow' against them. "
-    "Default to a one hour duration when none is stated. Keep the title short and natural."
+    "You turn a spoken scheduling request into calendar events. Today's date and the user's "
+    "timezone are given; resolve relative dates like 'Friday' or 'tomorrow' against them.\n"
+    "Return one entry per date mentioned. Three dates means three entries.\n"
+    "Set all_day true when no time of day is given, or when the request says hold, block, "
+    "booked out, away, or all day. For an all-day entry use a bare date, YYYY-MM-DD, with no "
+    "time. Only invent a clock time when the user actually gave one.\n"
+    "Otherwise default to one hour. Keep titles short and natural."
 )
 
 DEFAULTS = {
