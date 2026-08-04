@@ -33,7 +33,9 @@ async def write(request: Request, args: WriteArgs) -> Outcome:
         conn.close()
     return Outcome(
         output="Saved.",
-        semantic=coreschema.response("Saved."),
+        # Headline reads "Noted to signet" and the note itself is the expanded detail.
+        # Response would have shown the user the single word "Replied".
+        semantic=coreschema.list_item(args.text, list_used="signet"),
         data={"journal_id": entry_id},
     )
 
@@ -48,7 +50,7 @@ async def search(request: Request, args: SearchArgs) -> Outcome:
     if not rows:
         return Outcome(
             output=f"Nothing in the journal matches {args.query!r}.",
-            semantic=coreschema.response("Nothing found."),
+            semantic=coreschema.action_logged("signet", "Nothing found", success=False),
             data=[],
         )
 

@@ -62,6 +62,9 @@ class Outcome:
     """True when this result contains text fetched from outside, such as web pages. Anything
     derived from it must stay fenced, and must not be allowed to trigger further capabilities
     without approval. Prompt injection is the reason."""
+    error: str | None = None
+    """Why something went wrong, for the feed. Never shown to the ring: the watch gets the
+    plain sentence in `semantic`, and this is for the person debugging afterwards."""
     cost_usd: float = 0.0
     model: str | None = None
     tokens_in: int | None = None

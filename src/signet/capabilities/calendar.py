@@ -114,7 +114,7 @@ async def list_events(request: Request, args: ListArgs) -> Outcome:
     if not events:
         return Outcome(
             output=f"Nothing on the calendar for the next {args.days} days.",
-            semantic=coreschema.response("Nothing scheduled."),
+            semantic=coreschema.action_logged("signet", "Nothing scheduled", success=True),
             data=[],
         )
 
@@ -124,7 +124,7 @@ async def list_events(request: Request, args: ListArgs) -> Outcome:
     return Outcome(
         # ISO for the model, something glanceable for the wrist.
         output=f"{len(events)} events:\n{listing}",
-        semantic=coreschema.response(f"{nxt.summary}, {when(nxt.start)}"),
+        semantic=coreschema.answer(f"{nxt.summary}, {when(nxt.start)}"),
         data=[{"summary": e.summary, "start": e.start, "end": e.end} for e in events],
     )
 

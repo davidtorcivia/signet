@@ -258,12 +258,14 @@ class Verbs:
             if not notes:
                 return Outcome(
                     output="I could not answer that, and nothing in your notes matches.",
-                    semantic=coreschema.response("Nothing found."),
+                    semantic=coreschema.action_logged(
+                        "signet", "Nothing in your notes matches", success=False
+                    ),
                 )
             top = notes[0]["text"]
             return Outcome(
                 output=found.output,
-                semantic=coreschema.response(top[:200]),
+                semantic=coreschema.answer(top),
                 data=notes,
             )
 
@@ -309,7 +311,9 @@ class Verbs:
                 logger.warning("ask degraded: %s", exc)
                 return Outcome(
                     output=found.output or "I could not reach the model.",
-                    semantic=coreschema.response("Could not answer just now."),
+                    semantic=coreschema.action_logged(
+                        "signet", "Couldn't answer just now", success=False
+                    ),
                     data=notes,
                 )
             cost = completion.cost_usd
@@ -344,7 +348,10 @@ class Verbs:
 
         return Outcome(
             output=answer or "I do not know.",
-            semantic=coreschema.response(answer or "I do not know."),
+            # The answer has to be the headline. Response renders as the word "Replied" and
+            # hides the text behind a tap, which is how asking a question produced nothing
+            # readable on the watch.
+            semantic=coreschema.answer(answer or "I do not know."),
             data={"notes": notes, "sources": sources},
             cost_usd=cost,
             model=completion.model if completion else None,
@@ -362,11 +369,14 @@ class Verbs:
         if not google.connected(conn) or not llm.available or not self._budget_left(conn):
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
             message = (
-                "Calendar isn't connected. I saved it."
+                "Calendar isn't connected, saved to your journal"
                 if not google.connected(conn)
-                else "I couldn't work out the time. I saved it."
+                else "Couldn't work out the time, saved to your journal"
             )
-            return Outcome(output=message, semantic=coreschema.response(message))
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=False),
+            )
 
         now = datetime.now().astimezone()
         try:
@@ -386,14 +396,20 @@ class Verbs:
             )
         except LLMUnavailable:
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
-            message = "I couldn't reach the model. I saved it."
-            return Outcome(output=message, semantic=coreschema.response(message))
+            message = "Couldn't reach the model, saved to your journal"
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=False),
+            )
 
         parsed = completion.data or {}
         if not parsed.get("summary") or not parsed.get("start") or not parsed.get("end"):
             await self._run(conn, request, "journal.write", {"text": request.text, "kind": "todo"})
-            message = "I couldn't work out the time. I saved it."
-            return Outcome(output=message, semantic=coreschema.response(message))
+            message = "Couldn't work out the time, saved to your journal"
+            return Outcome(
+                output=message,
+                semantic=coreschema.action_logged("signet", message, success=False),
+            )
 
         outcome = await self._run(
             conn,

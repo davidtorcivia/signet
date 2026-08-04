@@ -45,7 +45,7 @@ async def web_search(request: Request, args: WebSearchArgs) -> Outcome:
     if not response.results:
         return Outcome(
             output=f"No web results for {args.query!r}.",
-            semantic=coreschema.response("Nothing found."),
+            semantic=coreschema.action_logged("signet", "Nothing found on the web", success=False),
             data={"results": [], "untrusted": True},
         )
 

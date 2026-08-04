@@ -141,7 +141,12 @@ def test_capture_returns_core_schema_shape(legacy: LegacyClient, cfg):
     assert isinstance(result["_meta"]["coreSchema"], int)
     structured = result["structuredContent"]
     assert structured["output"] == "Saved."
-    assert structured["semanticResult"] == {"type": "Response", "text": "Saved."}
+    # ListItemCreation, not Response: the app renders Response as the bare word "Replied"
+    # and hides the text, so a capture would show the user nothing about what was saved.
+    semantic = structured["semanticResult"]
+    assert semantic["type"] == "ListItemCreation"
+    assert semantic["content"] == "handshake test"
+    assert semantic["listUsed"] == "signet"
     # Plain-text clients must still get something.
     assert result["content"][0]["text"] == "Saved."
 
@@ -162,7 +167,13 @@ def test_semantic_result_carries_no_unknown_keys(legacy: LegacyClient):
     result = legacy.call(
         "tools/call", {"name": "capture", "arguments": {"text": "field check"}}, id_=4
     )["result"]
-    assert set(result["structuredContent"]["semanticResult"]) <= {"type", "text", "question"}
+    semantic = result["structuredContent"]["semanticResult"]
+    allowed = {
+        "Response": {"type", "text", "question"},
+        "ListItemCreation": {"type", "content", "listUsed", "remindAt", "resolvedListId"},
+        "ActionLogged": {"type", "toolName", "title", "success", "body"},
+    }
+    assert set(semantic) <= allowed[semantic["type"]]
 
 
 def test_get_on_mcp_does_not_open_a_stream(server: str):

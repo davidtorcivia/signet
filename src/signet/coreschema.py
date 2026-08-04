@@ -9,20 +9,27 @@ lands on the watch.
 **Getting on the watch is therefore a property of the semanticResult, not a separate feature.**
 Every capability picks the variant that matches what it did:
 
-| What happened | Variant | What the user sees |
-| --- | --- | --- |
-| Answered a question | `Response` | The answer, on the watch |
-| Made a calendar event | `CalendarEventCreation` | Confirmation with time and title |
-| Created a task/reminder | `TaskCreation` | Confirmation with title and deadline |
-| Added to a list | `ListItemCreation` | Confirmation |
-| Set an alarm or timer | `AlarmCreation` / `TimerCreation` | Confirmation |
-| Sent a message | `MessageSent` | Confirmation |
-| Did something else | `ActionLogged` | A logged action |
-| Returned data mid-thought | `SupportingData` | Nothing; the model keeps going |
-| Failed | `GenericFailure` | The error |
+**The headline the user actually reads is `actionText()`, and most variants hard-code it.**
+Read out of `ui/components/chat/SemanticResultUtil.kt`:
 
-Because these are read on a watch face, `Response.text` should be one or two sentences. Long
-prose is the wrong shape for the medium regardless of how good the answer is.
+| Variant | Headline the user sees | Expanded detail |
+| --- | --- | --- |
+| `Response` | the fixed word **"Replied"** | `text`, only if expanded |
+| `ListItemCreation` | **"Noted"**, or "Noted to {listUsed}" | `content` |
+| `TaskCreation` | "Reminder added" | title and deadline |
+| `CalendarEventCreation` | **"Added {title} at {date}, {time}"** | title, time, place |
+| `SupportingData` | "Gathered info" | `summary` |
+| `GenericSuccess` | "Action completed" | none |
+| `GenericFailure` | "Action failed" | `userErrorMessage` |
+| `ActionLogged` | **`title`, our own words** | none |
+
+That table is the whole reason answers stopped reaching the watch. `Response` looks like the
+obvious variant for an answer and renders as the single word "Replied"; the answer itself is
+hidden behind a tap. Anything the user must read at a glance therefore goes in a variant whose
+headline carries our text: `ActionLogged.title`, or one of the creation variants that build a
+sentence from real fields.
+
+Because these are read on a watch face, that text should be one short sentence.
 
 See `docs/00-research.md` §2.
 
@@ -111,6 +118,22 @@ def list_item(
     return out
 
 
+def answer(text: str, *, limit: int = 140) -> dict[str, Any]:
+    """An answer the user reads at a glance.
+
+    Deliberately not `Response`, whose headline is the fixed word "Replied" with the text
+    hidden behind a tap. `ActionLogged.title` is rendered verbatim, so it is the only variant
+    that puts an actual answer in front of someone looking at a watch.
+
+    Trimmed on a word boundary as a backstop; the prompt already asks for one or two
+    sentences, and a headline is not the place to discover it did not comply.
+    """
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(",.;:") + "..."
+    return action_logged("signet", text or "No answer", success=True)
+
+
 def action_logged(tool_name: str, title: str, success: bool, body: str = "") -> dict[str, Any]:
     """The catch-all for "signet did a thing" that has no richer variant."""
     return {
@@ -154,3 +177,32 @@ def result(
         meta={"coreSchema": CORE_SCHEMA_VERSION},
         isError=is_error,
     )
+
+
+def headline(semantic: dict[str, Any]) -> str:
+    """What the user actually reads, mirroring the app's `actionText()`.
+
+    Kept here so there is one place that knows the app hard-codes most of these, and so tests
+    can assert on the words a person sees rather than on a field they never look at.
+    """
+    variant = semantic.get("type")
+    if variant == "ActionLogged":
+        return str(semantic.get("title", ""))
+    if variant == "ListItemCreation":
+        listed = semantic.get("listUsed")
+        return f"Noted to {listed}" if listed else "Noted"
+    if variant == "CalendarEventCreation":
+        return f"Added {semantic.get('title', '')} to calendar"
+    if variant == "TaskCreation":
+        return "Reminder added"
+    if variant == "SupportingData":
+        return "Gathered info"
+    if variant == "Response":
+        return "Replied"
+    if variant == "GenericFailure":
+        return "Action failed"
+    if variant == "GenericSuccess":
+        return "Action completed"
+    if variant == "MessageSent":
+        return f"Messaged {semantic.get('recipientName', '')}"
+    return ""

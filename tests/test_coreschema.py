@@ -75,3 +75,38 @@ def test_watch_answer_and_model_answer_can_differ():
     payload = result.model_dump(by_alias=True, exclude_none=True)
     assert payload["structuredContent"]["output"].startswith("It rained")
     assert payload["structuredContent"]["semanticResult"]["text"] == "12mm on Tuesday."
+
+
+def test_headline_matches_what_the_app_renders():
+    """Mirrors actionText() in SemanticResultUtil.kt. Most variants hard-code their headline,
+    which is why an answer sent as Response showed the user the single word "Replied"."""
+    assert coreschema.headline(coreschema.response("August 21st")) == "Replied"
+    assert coreschema.headline(coreschema.list_item("milk")) == "Noted"
+    assert coreschema.headline(coreschema.list_item("milk", list_used="signet")) == (
+        "Noted to signet"
+    )
+    assert coreschema.headline(coreschema.supporting_data("3 notes")) == "Gathered info"
+    assert coreschema.headline(coreschema.generic_failure("nope")) == "Action failed"
+
+
+def test_an_answer_is_its_own_headline():
+    """The whole point: what the user reads is the answer, not a category label."""
+    semantic = coreschema.answer("August 21st, 22nd and 24th.")
+    assert coreschema.headline(semantic) == "August 21st, 22nd and 24th."
+    assert_valid(semantic)
+
+
+def test_a_long_answer_is_trimmed_on_a_word_boundary():
+    semantic = coreschema.answer("word " * 80)
+    shown = coreschema.headline(semantic)
+    assert len(shown) <= 145
+    assert shown.endswith("...")
+    assert "  " not in shown
+
+
+def test_answer_collapses_whitespace():
+    assert coreschema.headline(coreschema.answer("two\n\nlines  here")) == "two lines here"
+
+
+def test_answer_never_renders_empty():
+    assert coreschema.headline(coreschema.answer("   ")) == "No answer"

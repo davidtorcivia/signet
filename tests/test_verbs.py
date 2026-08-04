@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from signet import config, db
+from signet import config, coreschema, db
 from signet.auth import Principal
 from signet.envelope import Request
 from signet.llm import LLM, Completion, LLMUnavailable
@@ -81,7 +81,7 @@ async def test_capture_saves_and_confirms(cfg, conn):
     outcome = await verbs.call(conn, "capture", ring_request("buy fixer"))
 
     assert not outcome.is_error
-    assert outcome.semantic == {"type": "Response", "text": "Saved."}
+    assert coreschema.headline(outcome.semantic) == "Noted to signet"
     assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["buy fixer"]
 
 
@@ -109,8 +109,8 @@ async def test_ask_answers_from_the_journal(cfg, conn):
     await verbs.call(conn, "capture", ring_request("the enlarger bulb blew"))
 
     outcome = await verbs.call(conn, "ask", ring_request("what happened to the enlarger"))
-    assert outcome.semantic["type"] == "Response"
-    assert outcome.semantic["text"] == "The bulb blew on Tuesday."
+    assert coreschema.headline(outcome.semantic)
+    assert coreschema.headline(outcome.semantic) == "The bulb blew on Tuesday."
 
 
 async def test_ask_records_cost_and_model(cfg, conn):
@@ -130,20 +130,20 @@ async def test_ask_without_a_model_falls_back_to_search(cfg, conn):
 
     outcome = await verbs.call(conn, "ask", ring_request("shutter"))
     assert not outcome.is_error
-    assert "sticking" in outcome.semantic["text"]
+    assert "sticking" in coreschema.headline(outcome.semantic)
 
 
 async def test_ask_with_no_model_and_no_notes_says_so(cfg, conn):
     verbs = build(cfg, LLM(api_key=None))
     outcome = await verbs.call(conn, "ask", ring_request("anything at all"))
-    assert outcome.semantic["text"] == "Nothing found."
+    assert "nothing" in coreschema.headline(outcome.semantic).lower()
 
 
 async def test_ask_survives_the_model_failing_midway(cfg, conn):
     verbs = build(cfg, FakeLLM(fail=True))
     outcome = await verbs.call(conn, "ask", ring_request("hello"))
     assert not outcome.is_error
-    assert outcome.semantic["type"] == "Response"
+    assert coreschema.headline(outcome.semantic)
 
 
 async def test_daily_cost_cap_stops_model_calls(cfg, conn):
@@ -171,7 +171,7 @@ async def test_schedule_saves_rather_than_dropping(cfg, conn):
     """Calendar is P2. A spoken commitment must not vanish in the meantime."""
     verbs = build(cfg, LLM(api_key=None))
     outcome = await verbs.call(conn, "schedule", ring_request("coffee with Sarah Friday at 3"))
-    assert "saved it" in outcome.output.lower()
+    assert "saved to your journal" in outcome.output.lower()
     rows = [r["text"] for r in conn.execute("SELECT text FROM journal")]
     assert rows == ["coffee with Sarah Friday at 3"]
 
@@ -269,7 +269,7 @@ async def test_journal_answer_never_searches_the_web(cfg, conn):
 
     outcome = await verbs.call(conn, "ask", ring_request("what happened to the enlarger"))
 
-    assert outcome.semantic["text"] == "The bulb blew on Tuesday."
+    assert coreschema.headline(outcome.semantic) == "The bulb blew on Tuesday."
     assert llm.calls == 1, "answering from the journal should take one call and no search"
     assert outcome.data["sources"] == []
 
@@ -298,7 +298,7 @@ async def test_web_search_only_after_the_model_asks_for_it(cfg, conn, monkeypatc
     outcome = await verbs.call(conn, "ask", ring_request("what is the answer to everything"))
 
     assert llm.calls == 2
-    assert outcome.semantic["text"] == "It is 42."
+    assert coreschema.headline(outcome.semantic) == "It is 42."
     assert outcome.data["sources"]
     # Both model calls plus the search are billed to the request.
     assert outcome.cost_usd == pytest.approx(0.00004 * 2 + 0.007)
@@ -310,8 +310,8 @@ async def test_marker_never_leaks_to_the_watch(cfg, conn):
     verbs = build(cfg, ScriptedLLM("NEED_SEARCH"))
     outcome = await verbs.call(conn, "ask", ring_request("what is the price of gold"))
 
-    assert "NEED_SEARCH" not in outcome.semantic["text"]
-    assert "don't know" in outcome.semantic["text"]
+    assert "NEED_SEARCH" not in coreschema.headline(outcome.semantic)
+    assert "know" in coreschema.headline(outcome.semantic).lower()
 
 
 async def test_time_sensitive_questions_skip_the_stale_local_attempt(cfg, conn, monkeypatch):
@@ -344,7 +344,7 @@ async def test_time_sensitive_questions_skip_the_stale_local_attempt(cfg, conn, 
     outcome = await verbs.call(conn, "ask", ring_request("what is the current spec version?"))
 
     assert llm.calls == 1, "should go straight to search, not ask the model twice"
-    assert "2026-07-28" in outcome.semantic["text"]
+    assert "2026-07-28" in coreschema.headline(outcome.semantic)
     assert outcome.data["sources"]
 
 

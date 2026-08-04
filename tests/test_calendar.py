@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from signet import config, db, google
+from signet import config, coreschema, db, google
 from signet.auth import Principal
 from signet.envelope import Request
 from signet.llm import LLM, Completion
@@ -158,7 +158,7 @@ async def test_schedule_without_a_connection_saves_the_request(cfg, conn):
     verbs = build(cfg, SchedulingLLM())
     outcome = await verbs.call(conn, "schedule", ring("coffee with Sarah Friday at 3"))
 
-    assert "saved it" in outcome.output.lower()
+    assert "saved to your journal" in outcome.output.lower()
     assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == [
         "coffee with Sarah Friday at 3"
     ]
@@ -188,7 +188,7 @@ async def test_unparseable_time_falls_back_to_the_journal(cfg, conn):
     )
     outcome = await verbs.call(conn, "schedule", ring("sometime whenever"))
 
-    assert "saved it" in outcome.output.lower()
+    assert "saved to your journal" in outcome.output.lower()
     assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["sometime whenever"]
 
 
@@ -274,7 +274,8 @@ async def test_list_puts_a_readable_time_on_the_watch(conn, monkeypatch):
     registry.discover()
     outcome = await registry.invoke(conn, ring("what's on"), "calendar.list", {"days": 14})
 
-    assert "2026-08-06T20:00:00" not in outcome.semantic["text"], "raw ISO reached the watch"
-    assert outcome.semantic["text"].startswith("Nami Nori Williamsburg,")
+    shown = coreschema.headline(outcome.semantic)
+    assert "2026-08-06T20:00:00" not in shown, "raw ISO reached the watch"
+    assert shown.startswith("Nami Nori Williamsburg,")
     # The model still gets the precise timestamp.
     assert "2026-08-06T20:00:00-04:00" in outcome.output

@@ -101,17 +101,34 @@ async def fetch_models(conn: sqlite3.Connection, *, force: bool = False) -> list
     return parse_models(payload)
 
 
+def _normalise(entries) -> list[dict]:
+    """Tolerate the older cache format, which was a plain list of provider names."""
+    out = []
+    for entry in entries or []:
+        if isinstance(entry, str):
+            out.append({"name": entry, "structured": True})
+        elif isinstance(entry, dict) and entry.get("name"):
+            out.append({"name": entry["name"], "structured": bool(entry.get("structured"))})
+    return out
+
+
 async def fetch_providers(
     conn: sqlite3.Connection, model_id: str, *, force: bool = False
-) -> list[str]:
-    """Providers that actually serve this model, in OpenRouter's own naming."""
+) -> list[dict]:
+    """Providers that serve this model, and whether each can do structured output.
+
+    That flag is load-bearing. signet's router and scheduler ask for a JSON schema, and a
+    provider that cannot honour it is simply not an eligible endpoint. Pin only such a
+    provider with fallbacks off and OpenRouter answers "No endpoints found", so questions
+    still work while scheduling silently falls back to the journal.
+    """
     if not model_id:
         return []
     key = PROVIDER_CACHE_PREFIX + model_id
     cached = db.get_setting(conn, key, "")
     if cached and not force:
         try:
-            return json.loads(cached)
+            return _normalise(json.loads(cached))
         except json.JSONDecodeError:
             pass
 
@@ -123,16 +140,20 @@ async def fetch_providers(
             payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("could not list providers for %s: %s", model_id, exc)
-        return json.loads(cached) if cached else []
+        return _normalise(json.loads(cached)) if cached else []
 
-    names: list[str] = []
+    found: list[dict] = []
+    seen: set[str] = set()
     for endpoint in (payload.get("data") or {}).get("endpoints", []):
         name = endpoint.get("provider_name")
-        if name and name not in names:
-            names.append(name)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        supported = endpoint.get("supported_parameters") or []
+        found.append({"name": name, "structured": "structured_outputs" in supported})
 
-    db.set_setting(conn, key, json.dumps(names))
-    return names
+    db.set_setting(conn, key, json.dumps(found))
+    return found
 
 
 def build_provider_config(order: list[str], allow_fallbacks: bool) -> dict:
