@@ -59,7 +59,14 @@ class Capability:
         return self.exposure in ("mcp", "both")
 
     def input_schema(self) -> dict[str, Any]:
-        """JSON Schema for the MCP tool definition."""
+        """JSON Schema for the tool definition.
+
+        A mounted upstream supplies its own, because the server owns that contract and
+        rebuilding it as a pydantic model here would be a compiler with its own bugs.
+        """
+        supplied = self.metadata.get("input_schema")
+        if isinstance(supplied, dict):
+            return supplied
         schema = self.schema.model_json_schema()
         schema.pop("title", None)
         return schema

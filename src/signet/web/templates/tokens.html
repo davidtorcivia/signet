@@ -29,9 +29,21 @@
   <pre>Bearer &lt;token from above&gt;</pre>
 </div>
 
-<form class="inline" method="post" action="/app/tokens" style="margin-bottom:1rem">
-  <input type="text" name="name" placeholder="Name, for example ring" required>
-  <button>Create</button>
+<form method="post" action="/app/tokens" style="margin-bottom:1rem">
+  <div class="panel">
+    <input type="text" name="name" placeholder="Name, for example ring" required>
+    <div class="label" style="margin-top:.7rem">What it may do</div>
+    <div style="margin-top:.3rem">
+      {% for scope in all_scopes %}
+        <label class="check" style="min-height:36px">
+          <input type="checkbox" name="scopes" value="{{ scope }}"
+                 {{ 'checked' if scope in default_scopes }}>
+          <span class="mono" style="font-size:.8rem">{{ scope }}</span>
+        </label>
+      {% endfor %}
+    </div>
+    <div style="margin-top:.6rem"><button>Create</button></div>
+  </div>
 </form>
 
 <div class="panel">

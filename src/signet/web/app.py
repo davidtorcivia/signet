@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import secrets
 import statistics
 import time
@@ -33,7 +34,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
 
-from .. import db, google, openrouter, prompts
+from .. import db, google, openrouter, prompts, upstream
 from ..config import Config
 from ..registry import get_registry, run_approved
 
@@ -343,11 +344,18 @@ async def tokens(request: Request) -> Response:
     finally:
         conn.close()
     new_token = request.session.pop("new_token", None)
+    conn = _conn(request)
+    try:
+        scopes = upstream.known_scopes(conn)
+    finally:
+        conn.close()
     return _render(
         request,
         "tokens.html",
         page="tokens",
         tokens=rows,
+        all_scopes=scopes,
+        default_scopes=set(db.DEFAULT_RING_SCOPES),
         new_token=new_token,
         # Built the same way as the OAuth redirect, so it is right behind the tunnel.
         mcp_url=_public_base(request) + "/mcp",
@@ -361,7 +369,8 @@ async def create_token(request: Request) -> Response:
     name = str(form.get("name") or "").strip() or "unnamed"
     conn = _conn(request)
     try:
-        _, plaintext = db.create_token(conn, name, list(db.DEFAULT_RING_SCOPES))
+        chosen = [s for s in form.getlist("scopes") if s in upstream.known_scopes(conn)]
+        _, plaintext = db.create_token(conn, name, chosen or list(db.DEFAULT_RING_SCOPES))
     finally:
         conn.close()
     # Shown once on the next render, then gone.
@@ -781,6 +790,124 @@ async def deny(request: Request) -> Response:
     return RedirectResponse("/app/approvals", status_code=303)
 
 
+async def upstreams(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        rows = upstream.list_upstreams(conn)
+        tools_by_name = {
+            row["name"]: [
+                {"name": t["name"], "read_only": upstream.looks_read_only(t["name"])}
+                for t in upstream.cached_tools(row)
+            ]
+            for row in rows
+        }
+    finally:
+        conn.close()
+    return _render(
+        request,
+        "upstreams.html",
+        page="upstreams",
+        rows=rows,
+        tools_by_name=tools_by_name,
+        errors=request.session.pop("upstream_errors", []),
+        note=request.session.pop("upstream_note", None),
+    )
+
+
+async def _connect(conn, name: str) -> tuple[int, str | None]:
+    """Fetch and cache a server's tools. Returns how many, and why not."""
+    row = upstream.get_upstream(conn, name)
+    if row is None:
+        return 0, "No such server."
+    try:
+        tools = await upstream.fetch_tools(upstream.from_row(row))
+    except Exception as exc:
+        upstream.record_failure(conn, name, str(exc))
+        return 0, f"Could not reach {name}: {str(exc)[:200]}"
+    upstream.record_tools(conn, name, tools)
+    return len(tools), None
+
+
+async def add_upstream(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    name = re.sub(r"[^a-z0-9_]", "", str(form.get("name") or "").strip().lower())
+    url = str(form.get("url") or "").strip()
+    if not name or not url:
+        request.session["upstream_errors"] = ["A short name and a URL are both required."]
+        return RedirectResponse("/app/upstreams", status_code=303)
+
+    conn = _conn(request)
+    try:
+        upstream.save_upstream(
+            conn,
+            name=name,
+            url=url,
+            auth_header=str(form.get("auth_header") or "").strip() or None,
+            trusted=bool(form.get("trusted")),
+            approve_all=bool(form.get("approve_all")),
+        )
+        count, error = await _connect(conn, name)
+    finally:
+        conn.close()
+
+    if error:
+        request.session["upstream_errors"] = [error]
+    else:
+        plural = "" if count == 1 else "s"
+        request.session["upstream_note"] = (
+            f"{name}: {count} tool{plural} mounted. "
+            f"Grant a token the mcp:{name} scope to let the ring use them."
+        )
+    return RedirectResponse("/app/upstreams", status_code=303)
+
+
+async def refresh_upstream(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    name = request.path_params["name"]
+    conn = _conn(request)
+    try:
+        count, error = await _connect(conn, name)
+    finally:
+        conn.close()
+    if error:
+        request.session["upstream_errors"] = [error]
+    else:
+        request.session["upstream_note"] = f"{name}: {count} tools."
+    return RedirectResponse("/app/upstreams", status_code=303)
+
+
+async def toggle_upstream(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        row = upstream.get_upstream(conn, request.path_params["name"])
+        if row is not None:
+            conn.execute(
+                "UPDATE upstreams SET enabled = ? WHERE name = ?",
+                (0 if row["enabled"] else 1, row["name"]),
+            )
+    finally:
+        conn.close()
+    return RedirectResponse("/app/upstreams", status_code=303)
+
+
+async def remove_upstream(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        upstream.delete_upstream(conn, request.path_params["name"])
+    finally:
+        conn.close()
+    return RedirectResponse("/app/upstreams", status_code=303)
+
+
 async def toggle_kill(request: Request) -> Response:
     if not _authed(request):
         return RedirectResponse("/app/login", status_code=303)
@@ -855,6 +982,11 @@ def build(cfg: Config) -> Starlette | None:
         Route("/google/connect", google_connect, methods=["POST"]),
         Route("/google/callback", google_callback, methods=["GET"], name="google_callback"),
         Route("/google/disconnect", google_disconnect, methods=["POST"]),
+        Route("/upstreams", upstreams, methods=["GET"]),
+        Route("/upstreams", add_upstream, methods=["POST"]),
+        Route("/upstreams/{name}/refresh", refresh_upstream, methods=["POST"]),
+        Route("/upstreams/{name}/toggle", toggle_upstream, methods=["POST"]),
+        Route("/upstreams/{name}/delete", remove_upstream, methods=["POST"]),
         Route("/approvals", approvals),
         Route("/approvals/{job_id}/approve", approve, methods=["POST"]),
         Route("/approvals/{job_id}/deny", deny, methods=["POST"]),

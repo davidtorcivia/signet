@@ -13,7 +13,7 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config as config_module
-from . import coreschema, db
+from . import coreschema, db, upstream
 from .auth import BearerAuthMiddleware, DbTokenVerifier, Principal
 from .config import Config
 from .envelope import Request
@@ -198,6 +198,11 @@ def init_storage(cfg: Config) -> None:
 def build_verbs(cfg: Config) -> Verbs:
     registry = Registry()
     registry.discover()
+    conn = db.connect(cfg.db_path)
+    try:
+        upstream.mount(registry, conn)
+    finally:
+        conn.close()
     llm = LLM(cfg.openrouter_api_key, model=cfg.model)
     router = Router(llm, rules_path=cfg.data_dir / "rules.yaml")
     return Verbs(cfg=cfg, registry=registry, llm=llm, router=router)
