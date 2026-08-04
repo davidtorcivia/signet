@@ -548,67 +548,77 @@ async def save_settings(request: Request) -> Response:
         return RedirectResponse("/app/login", status_code=303)
     form = await request.form()
     errors: list[str] = []
+    # Clear and Refresh are submit buttons inside the same form as everything else. Treating
+    # them as exclusive branches meant clicking either silently discarded every other edit on
+    # the page, so a ticked provider could vanish without a word. Always save first, then
+    # apply whichever button was pressed.
+    clearing = str(form.get("clear") or "")
+    refreshing = str(form.get("refresh") or "") == "models"
+
     conn = _conn(request)
     try:
-        clearing = str(form.get("clear") or "")
-        if str(form.get("refresh") or "") == "models":
-            await openrouter.fetch_models(conn, force=True)
-            model_now = db.get_config(conn, "model") or request.app.state.cfg.model
-            await openrouter.fetch_providers(conn, model_now, force=True)
-        elif clearing in db.CONFIGURABLE:
-            db.clear_config(conn, clearing)
-        else:
-            chosen_model = str(form.get("model") or "").strip()
-            if chosen_model:
-                db.set_config(conn, "model", chosen_model)
+        chosen_model = str(form.get("model") or "").strip()
+        if chosen_model and clearing != "model":
+            db.set_config(conn, "model", chosen_model)
 
-            # Checkbox values arrive in DOM order, which the up and down buttons control, so
-            # the submitted order is the routing order.
-            # Only real provider names. A rendering bug once put stringified objects in
-            # these values, and without this they would have been written straight into the
-            # routing config, where they would silently match no endpoint.
-            known = {
-                p["name"]
-                for p in await openrouter.fetch_providers(
-                    conn, db.get_config(conn, "model") or request.app.state.cfg.model
-                )
-            }
-            order = [str(v) for v in form.getlist("provider_order") if str(v) in known]
-            allow_fallbacks = bool(form.get("allow_fallbacks"))
+        # Only names that are real providers for this model. A rendering bug once put
+        # stringified objects in these values, and without this they would have been written
+        # straight into the routing config, where they would match no endpoint.
+        known = {
+            p["name"]
+            for p in await openrouter.fetch_providers(
+                conn, db.get_config(conn, "model") or request.app.state.cfg.model
+            )
+        }
+        # Checkbox values arrive in DOM order, which the up and down buttons control, so the
+        # submitted order is the routing order.
+        order = [str(v) for v in form.getlist("provider_order") if str(v) in known]
+        allow_fallbacks = bool(form.get("allow_fallbacks"))
+        if clearing != "provider":
             provider_config = openrouter.build_provider_config(order, allow_fallbacks)
             if provider_config:
                 db.set_config(conn, "provider", json.dumps(provider_config))
             else:
                 db.clear_config(conn, "provider")
 
-            for spec in SETTINGS_FIELDS:
-                submitted = str(form.get(spec["key"], "")).strip()
-                if spec["kind"] == "secret" and not submitted:
-                    # Blank means "leave it alone", since the current value is never shown.
+        for spec in SETTINGS_FIELDS:
+            if spec["key"] == clearing:
+                continue
+            submitted = str(form.get(spec["key"], "")).strip()
+            if spec["kind"] == "secret" and not submitted:
+                # Blank means "leave it alone", since the current value is never shown.
+                continue
+            if spec["kind"] == "number" and submitted:
+                try:
+                    float(submitted)
+                except ValueError:
+                    errors.append(f"{spec['label']}: not a number")
                     continue
-                if spec["kind"] == "number" and submitted:
-                    try:
-                        float(submitted)
-                    except ValueError:
-                        errors.append(f"{spec['label']}: not a number")
-                        continue
-                if spec["kind"] == "json" and submitted:
-                    try:
-                        parsed = json.loads(submitted)
-                    except json.JSONDecodeError as exc:
-                        errors.append(f"{spec['label']}: invalid JSON, {exc.msg}")
-                        continue
-                    if not isinstance(parsed, dict):
-                        errors.append(f"{spec['label']}: must be a JSON object")
-                        continue
-                if spec["kind"] == "prompt" and submitted == prompts.DEFAULTS.get(spec["key"]):
-                    # Unchanged from the default, so store nothing and keep following it.
-                    db.clear_config(conn, spec["key"])
+            if spec["kind"] == "json" and submitted:
+                try:
+                    parsed = json.loads(submitted)
+                except json.JSONDecodeError as exc:
+                    errors.append(f"{spec['label']}: invalid JSON, {exc.msg}")
                     continue
-                if submitted:
-                    db.set_config(conn, spec["key"], submitted)
+                if not isinstance(parsed, dict):
+                    errors.append(f"{spec['label']}: must be a JSON object")
+                    continue
+            if spec["kind"] == "prompt" and submitted == prompts.DEFAULTS.get(spec["key"]):
+                # Unchanged from the default, so store nothing and keep following it.
+                db.clear_config(conn, spec["key"])
+                continue
+            if submitted:
+                db.set_config(conn, spec["key"], submitted)
+
+        if clearing in db.CONFIGURABLE:
+            db.clear_config(conn, clearing)
+        if refreshing:
+            await openrouter.fetch_models(conn, force=True)
+            model_now = db.get_config(conn, "model") or request.app.state.cfg.model
+            await openrouter.fetch_providers(conn, model_now, force=True)
     finally:
         conn.close()
+
     request.session["settings_saved"] = True
     request.session["settings_errors"] = errors
     return RedirectResponse("/app/settings", status_code=303)
@@ -733,13 +743,16 @@ async def htmx_js(request: Request) -> Response:
     return Response(HTMX, media_type="application/javascript")
 
 
-# A signet: the band, and the seal face you press. Inline SVG so there is no binary asset to
-# manage and it stays crisp at any size.
+# A wax seal bearing a monogram, which is what a signet ring actually leaves behind.
+# Checked at 16px before choosing: the earlier band-and-seal drawing collapsed into a smudge
+# at favicon size, while a filled disc with a cut-out letter stays legible on light and dark.
 FAVICON = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" fill="none"/>'
-    '<circle cx="16" cy="20" r="8.5" fill="none" stroke="#c1272d" stroke-width="3.5"/>'
-    '<rect x="10" y="3" width="12" height="10" rx="1.5" fill="#c1272d"/>'
+    '<circle cx="16" cy="16" r="14" fill="#c1272d"/>'
+    '<path d="M20.5 11.2c-1-.9-2.5-1.5-4.2-1.5-3 0-5 1.6-5 3.9 0 2 1.4 3.1 4 3.7l1.6.4'
+    "c1.5.4 2.1.8 2.1 1.6 0 1-1 1.7-2.6 1.7-1.7 0-3.2-.7-4.2-1.8l-1.5 2.5c1.3 1.3 3.4 2.1"
+    " 5.7 2.1 3.2 0 5.4-1.6 5.4-4.1 0-2.1-1.4-3.2-4.2-3.9l-1.6-.4c-1.3-.3-1.9-.7-1.9-1.4"
+    ' 0-.9.9-1.5 2.3-1.5 1.4 0 2.6.5 3.5 1.3z" fill="#fff"/>'
     "</svg>"
 )
 

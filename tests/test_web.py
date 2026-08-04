@@ -631,3 +631,62 @@ async def test_favicon_is_served(client: httpx.AsyncClient):
     assert response.status_code == 200
     assert "image/svg+xml" in response.headers["content-type"]
     assert "<svg" in response.text
+
+
+async def test_refreshing_does_not_discard_your_edits(client: httpx.AsyncClient, cfg, catalogue):
+    """Clear and Refresh are submit buttons in the same form. Treating them as exclusive
+    branches meant clicking either silently threw away every other edit on the page, so a
+    provider you had just ticked vanished without a word."""
+    await sign_in(client)
+    await client.post(
+        "/settings",
+        data={
+            "provider_order": ["DeepInfra", "Novita"],
+            "allow_fallbacks": "1",
+            "refresh": "models",
+        },
+    )
+
+    conn = db.connect(cfg.db_path)
+    stored = json.loads(db.get_config(conn, "provider"))
+    conn.close()
+    assert stored["order"] == ["DeepInfra", "Novita"]
+
+
+async def test_clearing_one_field_keeps_the_others(client: httpx.AsyncClient, cfg, catalogue):
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "exa_api_key", "existing")
+    conn.close()
+
+    await sign_in(client)
+    await client.post(
+        "/settings",
+        data={
+            "provider_order": "DeepInfra",
+            "allow_fallbacks": "1",
+            "openrouter_api_key": "still-here",
+            "clear": "exa_api_key",
+        },
+    )
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "exa_api_key") is None, "the cleared field is cleared"
+    assert db.get_config(conn, "openrouter_api_key") == "still-here", "others still save"
+    assert json.loads(db.get_config(conn, "provider"))["order"] == ["DeepInfra"]
+    conn.close()
+
+
+async def test_clearing_a_field_ignores_its_submitted_value(
+    client: httpx.AsyncClient, cfg, catalogue
+):
+    """Clear must win over whatever the box happened to contain when it was pressed."""
+    conn = db.connect(cfg.db_path)
+    db.set_config(conn, "model", "someone/chatty")
+    conn.close()
+
+    await sign_in(client)
+    await client.post("/settings", data={"model": "someone/chatty", "clear": "model"})
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_config(conn, "model") is None
+    conn.close()
