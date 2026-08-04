@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Approvals{% endblock %}
+{% block content %}
+<div class="pagehead">
+  <h1 class="title">Approvals</h1>
+  <span class="spacer"></span>
+  <span class="label">{{ pending|length }} waiting</span>
+</div>
+
+<div class="panel">
+  {% if not pending %}
+    <div class="empty">Nothing waiting. Anything destructive will queue here first.</div>
+  {% endif %}
+  {% for job in pending %}
+    <div class="item">
+      <div class="row between">
+        <span class="tag">{{ job.capability }}</span>
+        <span class="muted mono" style="font-size:.72rem">expires {{ job.expires_at }}</span>
+      </div>
+      <p class="said">{{ job.title }}</p>
+      <div class="row" style="margin-top:.6rem">
+        <form method="post" action="/app/approvals/{{ job.id }}/approve">
+          <button class="tiny">Approve</button>
+        </form>
+        <form method="post" action="/app/approvals/{{ job.id }}/deny">
+          <button class="quiet tiny">Deny</button>
+        </form>
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% if decided %}
+  <h2 class="section">Recently decided</h2>
+  <div class="panel">
+    {% for job in decided %}
+      <div class="item row between">
+        <span>{{ job.title }}</span>
+        <span class="tag {{ 'on' if job.status == 'done' else 'bad' }}">{{ job.status }}</span>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<div class="panel muted" style="margin-top:1rem">
+  The ring cannot answer a confirmation prompt, so anything marked destructive parks here
+  instead of running. Approving carries out exactly what was asked, with the permissions the
+  original request had. Requests expire after an hour, because a tap tomorrow on something you
+  asked for today is not consent.
+</div>
+{% endblock %}

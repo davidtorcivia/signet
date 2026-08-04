@@ -17,7 +17,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -525,3 +525,93 @@ def purge_journal(conn: sqlite3.Connection, entry_id: str) -> bool:
             "DELETE FROM journal WHERE id = ? AND deleted_at IS NOT NULL", (entry_id,)
         )
     return cur.rowcount > 0
+
+
+# --- approval queue ---------------------------------------------------------------------
+#
+# Destructive capabilities never run when asked. The ring has no way to answer "are you sure",
+# so the request is parked here with everything needed to run it later, and one tap in the
+# portal carries it out.
+
+AWAITING = "awaiting_approval"
+APPROVAL_TTL_MINUTES = 60
+
+
+def queue_approval(
+    conn: sqlite3.Connection,
+    *,
+    capability: str,
+    args: dict[str, Any],
+    title: str,
+    request_id: str | None = None,
+    scopes: list[str] | None = None,
+    ttl_minutes: int = APPROVAL_TTL_MINUTES,
+) -> str:
+    """Park a destructive call. The caller's scopes are stored with it, so approving cannot
+    grant more than the request already had."""
+    job_id = new_id()
+    expires = datetime.now(UTC) + timedelta(minutes=ttl_minutes)
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO jobs(id, request_id, created_at, status, capability, payload_json, "
+            "title, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                job_id,
+                request_id,
+                now_iso(),
+                AWAITING,
+                capability,
+                json.dumps({"args": args, "scopes": sorted(scopes or [])}),
+                title,
+                expires.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            ),
+        )
+    return job_id
+
+
+def get_job(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+
+
+def pending_approvals(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    """Unexpired, undecided. An expired approval is not offered, because a tap tomorrow on
+    something you asked for today is not consent."""
+    return list(
+        conn.execute(
+            "SELECT * FROM jobs WHERE status = ? AND (expires_at IS NULL OR expires_at > ?) "
+            "ORDER BY created_at DESC LIMIT ?",
+            (AWAITING, now_iso(), limit),
+        )
+    )
+
+
+def expired_approvals(conn: sqlite3.Connection) -> int:
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'expired' WHERE status = ? AND expires_at <= ?",
+            (AWAITING, now_iso()),
+        )
+    return cur.rowcount
+
+
+def decide_job(conn: sqlite3.Connection, job_id: str, status: str, by: str = "portal") -> bool:
+    """Move a job out of the queue exactly once.
+
+    The status is part of the WHERE clause on purpose: two taps on the same notification,
+    or a replayed link, must not run the action twice.
+    """
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE jobs SET status = ?, decided_at = ?, decided_by = ? "
+            "WHERE id = ? AND status = ?",
+            (status, now_iso(), by, job_id, AWAITING),
+        )
+    return cur.rowcount > 0
+
+
+def finish_job(conn: sqlite3.Connection, job_id: str, status: str, result: Any = None) -> None:
+    with transaction(conn):
+        conn.execute(
+            "UPDATE jobs SET status = ?, result_json = ? WHERE id = ?",
+            (status, json.dumps(result) if result is not None else None, job_id),
+        )

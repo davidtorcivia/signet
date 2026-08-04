@@ -212,6 +212,11 @@ a { color: var(--accent); }
     <a href="/app/tokens" class="{{ 'on' if page == 'tokens' }}">Tokens</a>
     <a href="/app/settings" class="{{ 'on' if page == 'settings' }}">Settings</a>
   </nav>
+  {% if awaiting %}
+    <a href="/app/approvals" class="tag on" style="text-decoration:none;margin-right:.5rem">
+      {{ awaiting }} waiting
+    </a>
+  {% endif %}
   <form method="post" action="/app/kill">
     <button class="{{ 'danger' if kill_switch else 'quiet' }} tiny">
       {{ 'Paused' if kill_switch else 'Pause' }}

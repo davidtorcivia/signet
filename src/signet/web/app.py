@@ -35,6 +35,7 @@ from starlette.templating import Jinja2Templates
 
 from .. import db, google, openrouter, prompts
 from ..config import Config
+from ..registry import get_registry, run_approved
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -83,6 +84,8 @@ def _render(request: Request, template: str, **context: Any) -> HTMLResponse:
     conn = _conn(request)
     try:
         context.setdefault("kill_switch", db.kill_switch_on(conn))
+        # Shown on every page: something waiting for you is not a thing to go looking for.
+        context.setdefault("awaiting", len(db.pending_approvals(conn)))
     finally:
         conn.close()
     context.setdefault("favicon_version", FAVICON_VERSION)
@@ -734,6 +737,50 @@ async def google_disconnect(request: Request) -> Response:
     return RedirectResponse("/app/settings", status_code=303)
 
 
+async def approvals(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.expired_approvals(conn)
+        pending = db.pending_approvals(conn)
+        decided = list(
+            conn.execute(
+                "SELECT * FROM jobs WHERE status NOT IN (?, 'running') "
+                "ORDER BY COALESCE(decided_at, created_at) DESC LIMIT 10",
+                (db.AWAITING,),
+            )
+        )
+    finally:
+        conn.close()
+    return _render(request, "approvals.html", page="approvals", pending=pending, decided=decided)
+
+
+async def approve(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        outcome = await run_approved(
+            get_registry(), conn, request.path_params["job_id"], by="portal"
+        )
+    finally:
+        conn.close()
+    request.session["approval_note"] = outcome.output
+    return RedirectResponse("/app/approvals", status_code=303)
+
+
+async def deny(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.decide_job(conn, request.path_params["job_id"], "denied", "portal")
+    finally:
+        conn.close()
+    return RedirectResponse("/app/approvals", status_code=303)
+
+
 async def toggle_kill(request: Request) -> Response:
     if not _authed(request):
         return RedirectResponse("/app/login", status_code=303)
@@ -808,6 +855,9 @@ def build(cfg: Config) -> Starlette | None:
         Route("/google/connect", google_connect, methods=["POST"]),
         Route("/google/callback", google_callback, methods=["GET"], name="google_callback"),
         Route("/google/disconnect", google_disconnect, methods=["POST"]),
+        Route("/approvals", approvals),
+        Route("/approvals/{job_id}/approve", approve, methods=["POST"]),
+        Route("/approvals/{job_id}/deny", deny, methods=["POST"]),
         Route("/kill", toggle_kill, methods=["POST"]),
         Route("/static/htmx.min.js", htmx_js),
         Route("/favicon.svg", favicon),

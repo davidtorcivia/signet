@@ -8,6 +8,7 @@ capability is not possible.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import pkgutil
 import sqlite3
@@ -17,6 +18,7 @@ from collections import defaultdict, deque
 from pydantic import ValidationError
 
 from . import coreschema, db
+from .auth import Principal
 from .capability import Capability
 from .envelope import Outcome, Request
 
@@ -85,7 +87,12 @@ class Registry:
         request: Request,
         name: str,
         arguments: dict,
+        *,
+        approved: bool = False,
     ) -> Outcome:
+        """`approved` is set only when running a job the user has just tapped to allow. Every
+        other check still applies, so approving cannot widen what the original request could
+        do."""
         started = time.monotonic()
         capability = self.get(name)
 
@@ -114,12 +121,27 @@ class Registry:
             # Recoverable: the on-device model can reasonably try again with better arguments.
             return _fail("I did not understand that request.", recoverable=True)
 
-        if capability.destructive:
-            # P2 turns this into a real approval queue with an ntfy action button. Until then
-            # refusing is the honest behaviour: the ring cannot answer a confirmation prompt,
-            # so silently running it would be the dangerous option.
-            logger.warning("destructive capability %s refused (approval queue is P2)", name)
-            return _fail("That needs approval, which is not built yet.", recoverable=False)
+        if capability.destructive and not approved:
+            # The ring cannot answer "are you sure": no session, no elicitation, and it is
+            # usually in a pocket. So this parks the call with the arguments already
+            # validated, and it runs on one deliberate tap afterwards.
+            title = describe_call(capability, args)
+            job_id = db.queue_approval(
+                conn,
+                capability=name,
+                args=args.model_dump(mode="json"),
+                title=title,
+                request_id=request.id or None,
+                scopes=sorted(request.scopes),
+            )
+            logger.info("queued %s for approval as %s", name, job_id)
+            return Outcome(
+                output=f"Waiting for your approval: {title}",
+                semantic=coreschema.action_logged(
+                    "signet", f"Needs your approval: {title}", success=False
+                ),
+                data={"job_id": job_id, "awaiting_approval": True},
+            )
 
         try:
             outcome = await capability.handler(request, args)
@@ -135,6 +157,23 @@ class Registry:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         logger.info("%s ok in %dms", name, elapsed_ms)
         return outcome
+
+
+def describe_call(capability: Capability, args) -> str:
+    """A short human sentence for the approval prompt.
+
+    What the user is being asked to allow has to be legible at a glance. "home.unlock" is not
+    a decision anyone can make; "Unlock the front door" is.
+    """
+    fields = args.model_dump(mode="json")
+    interesting = [
+        str(value)
+        for key, value in fields.items()
+        if isinstance(value, str | int | float) and str(value).strip() and key != "kind"
+    ]
+    subject = ", ".join(interesting[:2])
+    action = capability.description.rstrip(".").split(".")[0]
+    return f"{action}: {subject}" if subject else action
 
 
 def _fail(message: str, *, recoverable: bool) -> Outcome:
@@ -156,3 +195,42 @@ def get_registry() -> Registry:
         registry.discover()
         _registry = registry
     return _registry
+
+
+async def run_approved(
+    registry: Registry, conn: sqlite3.Connection, job_id: str, by: str = "portal"
+) -> Outcome:
+    """Carry out a job the user has approved.
+
+    The scopes stored with the job are used rather than the approver's, so a tap authorises
+    exactly the request that was made and nothing wider. Decided first and once, so a double
+    tap or a replayed link cannot run it twice.
+    """
+    job = db.get_job(conn, job_id)
+    if job is None:
+        return _fail("That approval no longer exists.", recoverable=False)
+    if job["status"] != db.AWAITING:
+        return _fail("That was already dealt with.", recoverable=False)
+    if job["expires_at"] and job["expires_at"] <= db.now_iso():
+        db.decide_job(conn, job_id, "expired", by)
+        return _fail("That approval expired. Ask again if you still want it.", recoverable=False)
+
+    if not db.decide_job(conn, job_id, "running", by):
+        return _fail("That was already dealt with.", recoverable=False)
+
+    payload = json.loads(job["payload_json"] or "{}")
+    request = Request(
+        text=job["title"] or "",
+        source="approval",
+        client=Principal(client_id=by, scopes=frozenset(payload.get("scopes") or [])),
+    )
+    outcome = await registry.invoke(
+        conn, request, job["capability"], payload.get("args") or {}, approved=True
+    )
+    db.finish_job(
+        conn,
+        job_id,
+        "failed" if outcome.is_error else "done",
+        {"output": outcome.output, "semantic": outcome.semantic},
+    )
+    return outcome

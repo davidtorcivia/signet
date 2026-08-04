@@ -709,3 +709,86 @@ async def test_favicon_url_changes_when_the_drawing_does(client: httpx.AsyncClie
 async def test_login_page_also_has_the_icon(client: httpx.AsyncClient):
     response = await client.get("/login")
     assert "/app/favicon.svg?v=" in response.text
+
+
+async def _queue_one(cfg, text="unlock the front door"):
+    """Park a destructive call the way a ring request would."""
+    from signet import coreschema
+    from signet.auth import Principal
+    from signet.capability import Capability
+    from signet.envelope import Outcome, Request
+    from signet.registry import Registry
+    from pydantic import BaseModel
+
+    class Args(BaseModel):
+        text: str
+
+    ran = []
+
+    async def handler(request, args):
+        ran.append(args.text)
+        return Outcome(output="Unlocked.", semantic=coreschema.response("Unlocked."))
+
+    registry = Registry()
+    registry.register(
+        Capability(
+            name="home.unlock",
+            description="Unlock the front door",
+            schema=Args,
+            handler=handler,
+            scopes=("home:control",),
+            destructive=True,
+        )
+    )
+    conn = db.connect(cfg.db_path)
+    request = Request(
+        text=text,
+        source="mcp:ring",
+        client=Principal(client_id="ring", scopes=frozenset({"home:control"})),
+    )
+    outcome = await registry.invoke(conn, request, "home.unlock", {"text": text})
+    conn.close()
+    return registry, ran, outcome
+
+
+async def test_approvals_page_lists_and_runs(client: httpx.AsyncClient, cfg, monkeypatch):
+    registry, ran, queued = await _queue_one(cfg)
+    monkeypatch.setattr("signet.web.app.get_registry", lambda: registry)
+
+    await sign_in(client)
+    body = (await client.get("/approvals")).text
+    assert "home.unlock" in body
+    assert "Approve" in body and "Deny" in body
+
+    assert ran == [], "nothing runs before the tap"
+    await client.post(f"/approvals/{queued.data['job_id']}/approve")
+    assert ran == ["unlock the front door"], "approving carries out exactly what was asked"
+
+
+async def test_denying_never_runs_it(client: httpx.AsyncClient, cfg, monkeypatch):
+    registry, ran, queued = await _queue_one(cfg)
+    monkeypatch.setattr("signet.web.app.get_registry", lambda: registry)
+
+    await sign_in(client)
+    await client.post(f"/approvals/{queued.data['job_id']}/deny")
+    assert ran == []
+
+    # And it cannot be resurrected by approving afterwards.
+    await client.post(f"/approvals/{queued.data['job_id']}/approve")
+    assert ran == []
+
+
+async def test_approvals_require_a_session(client: httpx.AsyncClient, cfg, monkeypatch):
+    registry, ran, queued = await _queue_one(cfg)
+    monkeypatch.setattr("signet.web.app.get_registry", lambda: registry)
+
+    response = await client.post(f"/approvals/{queued.data['job_id']}/approve")
+    assert response.headers["location"] == "/app/login"
+    assert ran == [], "an unauthenticated tap must not unlock anything"
+
+
+async def test_waiting_count_shows_on_every_page(client: httpx.AsyncClient, cfg, catalogue):
+    await _queue_one(cfg)
+    await sign_in(client)
+    for path in ("/", "/feed", "/journal"):
+        assert "1 waiting" in (await client.get(path)).text, path

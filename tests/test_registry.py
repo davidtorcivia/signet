@@ -127,7 +127,9 @@ async def test_handler_exception_becomes_a_clean_failure(conn: sqlite3.Connectio
     assert "upstream" not in outcome.output
 
 
-async def test_destructive_capability_does_not_run(conn: sqlite3.Connection):
+async def test_destructive_capability_queues_instead_of_running(conn: sqlite3.Connection):
+    """The ring cannot answer "are you sure": no session, no elicitation, and it is usually in
+    a pocket. So the call is parked with its arguments and runs on a deliberate tap."""
     ran = False
 
     async def dangerous(request: Request, args: EchoArgs) -> Outcome:
@@ -140,8 +142,108 @@ async def test_destructive_capability_does_not_run(conn: sqlite3.Connection):
     outcome = await registry.invoke(
         conn, request_from(caller("journal:write")), "test.echo", {"text": "hi"}
     )
+
+    assert ran is False, "it must not execute before approval"
+    assert outcome.data["awaiting_approval"] is True
+    assert "approval" in coreschema.headline(outcome.semantic).lower()
+    assert len(db.pending_approvals(conn)) == 1
+
+
+async def test_an_approved_job_runs_once(conn: sqlite3.Connection):
+    from signet.registry import run_approved
+
+    calls = []
+
+    async def dangerous(request: Request, args: EchoArgs) -> Outcome:
+        calls.append(args.text)
+        return Outcome(output="done", semantic=coreschema.response("done"))
+
+    registry = Registry()
+    registry.register(make(handler=dangerous, destructive=True))
+    queued = await registry.invoke(
+        conn, request_from(caller("journal:write")), "test.echo", {"text": "unlock"}
+    )
+    job_id = queued.data["job_id"]
+
+    outcome = await run_approved(registry, conn, job_id)
+    assert not outcome.is_error
+    assert calls == ["unlock"]
+
+    # A second tap, or a replayed link, must not run it again.
+    again = await run_approved(registry, conn, job_id)
+    assert again.is_error
+    assert calls == ["unlock"]
+
+
+async def test_approving_cannot_widen_what_was_asked(conn: sqlite3.Connection):
+    """The scopes stored with the job are used, not the approver's, so a tap authorises
+    exactly the request that was made."""
+    from signet.registry import run_approved
+
+    seen = {}
+
+    async def dangerous(request: Request, args: EchoArgs) -> Outcome:
+        seen["scopes"] = request.scopes
+        return Outcome(output="done", semantic=coreschema.response("done"))
+
+    registry = Registry()
+    registry.register(make(handler=dangerous, destructive=True, scopes=("home:control",)))
+    queued = await registry.invoke(
+        conn, request_from(caller("home:control")), "test.echo", {"text": "hi"}
+    )
+    await run_approved(registry, conn, queued.data["job_id"])
+
+    assert seen["scopes"] == frozenset({"home:control"})
+
+
+async def test_an_expired_approval_will_not_run(conn: sqlite3.Connection):
+    """A tap tomorrow on something asked for today is not consent."""
+    from signet.registry import run_approved
+
+    ran = False
+
+    async def dangerous(request: Request, args: EchoArgs) -> Outcome:
+        nonlocal ran
+        ran = True
+        return Outcome(output="done", semantic=coreschema.response("done"))
+
+    registry = Registry()
+    registry.register(make(handler=dangerous, destructive=True))
+    job_id = db.queue_approval(
+        conn,
+        capability="test.echo",
+        args={"text": "hi"},
+        title="do the thing",
+        scopes=["journal:write"],
+        ttl_minutes=-1,
+    )
+
+    outcome = await run_approved(registry, conn, job_id)
     assert outcome.is_error
-    assert ran is False, "a destructive capability must not execute before approval exists"
+    assert ran is False
+    assert db.pending_approvals(conn) == [], "an expired job is not offered"
+
+
+async def test_a_denied_job_never_runs(conn: sqlite3.Connection):
+    from signet.registry import run_approved
+
+    ran = False
+
+    async def dangerous(request: Request, args: EchoArgs) -> Outcome:
+        nonlocal ran
+        ran = True
+        return Outcome(output="done", semantic=coreschema.response("done"))
+
+    registry = Registry()
+    registry.register(make(handler=dangerous, destructive=True))
+    queued = await registry.invoke(
+        conn, request_from(caller("journal:write")), "test.echo", {"text": "hi"}
+    )
+    assert db.decide_job(conn, queued.data["job_id"], "denied")
+
+    outcome = await run_approved(registry, conn, queued.data["job_id"])
+    assert outcome.is_error
+    assert ran is False
 
 
 async def test_kill_switch_blocks_everything_except_the_journal(conn: sqlite3.Connection):
