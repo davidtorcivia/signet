@@ -10,6 +10,7 @@ run out of budget, not run out of money.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -26,6 +27,14 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731"
 PRICE_IN_PER_M = 0.09
 PRICE_OUT_PER_M = 0.18
+
+# Room for a reasoning model to think and still answer. Reasoning is billed as output, so the
+# whole ceiling is worth about $0.0004 and buys correctness on date arithmetic.
+SCHEMA_TOKEN_BUDGET = 2000
+
+# Providers go busy. Pinned with fallbacks off there is nowhere else to go, so one quick retry
+# turns a transient 503 into a slower answer instead of a lost request.
+RETRY_STATUSES = {408, 409, 429, 500, 502, 503, 504}
 
 
 def _looks_like_unsupported(message: str) -> bool:
@@ -193,13 +202,13 @@ class LLM:
             "max_tokens": max_tokens,
         }
         if schema is not None:
-            # Reasoning tokens come out of the same budget as the answer. Asked for a calendar
-            # event with 300 tokens, this model spent all 300 thinking and returned content of
-            # None with finish_reason "length", so the reply was empty and unparseable. These
-            # calls want a small object, not deliberation.
-            if "reasoning" not in self.params:
-                body["reasoning"] = {"enabled": False}
-            body["max_tokens"] = max(body["max_tokens"], 800)
+            # Reasoning tokens come out of the same budget as the answer, and a 300 token
+            # ceiling meant the model spent all 300 thinking and returned content of None with
+            # finish_reason "length". The fix is headroom, not less thinking: resolving "the
+            # 21st, 22nd and 24th" against today's date is exactly the arithmetic that
+            # benefits from it, and reasoning bills as output, so this ceiling is worth about
+            # four hundredths of a cent. Set `reasoning` in model params to control it.
+            body["max_tokens"] = max(body["max_tokens"], SCHEMA_TOKEN_BUDGET)
 
         if self.provider:
             body["provider"] = self.provider
@@ -217,19 +226,20 @@ class LLM:
             # described in words and the reply parsed tolerantly.
             body["messages"][0]["content"] += "\n\n" + describe(schema)
 
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            # OpenRouter uses these for attribution. Harmless, and it keeps the request
+            # identifiable in the dashboard.
+            "X-Title": "signet",
+        }
         try:
             async with httpx.AsyncClient(timeout=timeout or self.timeout) as client:
-                response = await client.post(
-                    OPENROUTER_URL,
-                    json=body,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                        # OpenRouter uses these for attribution. Harmless, and it keeps the
-                        # request identifiable in the dashboard.
-                        "X-Title": "signet",
-                    },
-                )
+                response = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                if response.status_code in RETRY_STATUSES:
+                    logger.info("openrouter %s, retrying once", response.status_code)
+                    await asyncio.sleep(1.5)
+                    response = await client.post(OPENROUTER_URL, json=body, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
         except httpx.HTTPStatusError as exc:
