@@ -110,8 +110,8 @@ class Registry:
             return _fail(f"signet has no capability called {name}.", recoverable=False)
 
         # The kill switch is deliberately checked before scopes: when it is on, the only thing
-        # that still works is writing to the journal, so a capture is never lost.
-        if db.kill_switch_on(conn) and not name.startswith("journal."):
+        # that still works is writing to the journal (and todos), so a capture is never lost.
+        if db.kill_switch_on(conn) and not name.startswith(("journal.", "todos.")):
             logger.warning("kill switch blocked %s", name)
             return _fail("signet is paused. Only capture is working.", recoverable=False)
 

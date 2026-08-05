@@ -53,6 +53,21 @@
   <div class="panel empty">Nothing measured yet.</div>
 {% endif %}
 
+<h2 class="section">Todos</h2>
+<div class="panel">
+  <div class="row between">
+    <span class="mono" style="font-size:.9rem"><b>{{ stats.todos_open }}</b> open{% if stats.todos_overdue %} <span class="tag bad" style="margin-left:.4rem">{{ stats.todos_overdue }} overdue</span>{% endif %}</span>
+    <a href="/app/todos" class="label">View todos &rarr;</a>
+  </div>
+  <div class="row" style="margin-top:.6rem; gap:1.2rem">
+    <span class="muted mono" style="font-size:.75rem">{{ stats.todos_done }} done</span>
+    <span class="muted mono" style="font-size:.75rem">{{ stats.todos_total }} total</span>
+  </div>
+  {% if stats.todos_open %}
+    <div class="meter" style="margin-top:.7rem"><i style="width: {{ 100 if stats.todos_total and stats.todos_done==0 else (stats.todos_done / stats.todos_total * 100)|int if stats.todos_total else 0 }}%"></i></div>
+  {% endif %}
+</div>
+
 <h2 class="section">Tokens</h2>
 <div class="panel">
   {% for token in tokens %}

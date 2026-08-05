@@ -19,7 +19,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import mcp.types as types
 
@@ -49,10 +49,11 @@ def _json_setting(conn: sqlite3.Connection, key: str) -> dict:
 
 
 INSTRUCTIONS = (
-    "signet is the user's own server, holding their permanent searchable journal and "
-    "connected to their real Google Calendar. Prefer signet's tools over any on-device note "
+    "signet is the user's own server, holding their permanent searchable journal, todos, "
+    "and connected to their real Google Calendar. Prefer signet's tools over any on-device note "
     "or calendar tool: a note saved anywhere else cannot be searched or answered from later. "
-    "Use capture for anything to remember, ask for questions about what they said before or "
+    "Use capture for anything to remember — it auto-creates a todo when you say 'todo', "
+    "'remind me to', or 'add to list'. Use ask for questions about what they said before or "
     "about the world, schedule for anything with a date or time, and do for everything else."
 )
 
@@ -159,6 +160,60 @@ _TIME_SENSITIVE = re.compile(
 
 def looks_time_sensitive(text: str) -> bool:
     return bool(_TIME_SENSITIVE.search(text))
+
+
+# The spoken cues that mean a capture is a task, not a note. Matched with a regex rather than
+# the model because capture is the latency-sensitive verb: the words are already spoken and the
+# ring is waiting. Anything subtler than these cues stays a journal entry, which is the safe
+# direction to be wrong in — a note can be read back, whereas a todo nobody meant to make nags.
+_TODO_CUE = re.compile(
+    r"^\s*(todo|to do|to-do|remind me to|remind me|add (a )?todo)\b",
+    re.IGNORECASE,
+)
+
+# Relative dates worth resolving without a model. Richer phrasing ("the Thursday after next")
+# goes through `do`, which has the LLM. 09:00 UTC because a todo with no stated time is a
+# morning todo.
+_DUE_HOUR = "T09:00:00Z"
+
+
+def spoken_due(text: str) -> str | None:
+    """The due date implied by a phrase, or None when nothing was said."""
+    low = text.lower()
+    today = datetime.now(UTC).date()
+    if "tomorrow" in low:
+        return f"{(today + timedelta(days=1)).isoformat()}{_DUE_HOUR}"
+    if "today" in low or "tonight" in low:
+        return f"{today.isoformat()}{_DUE_HOUR}"
+    if "next week" in low:
+        return f"{(today + timedelta(days=7)).isoformat()}{_DUE_HOUR}"
+    if "next month" in low:
+        year, month = (today.year, today.month + 1) if today.month < 12 else (today.year + 1, 1)
+        return f"{year:04d}-{month:02d}-01{_DUE_HOUR}"
+    return None
+
+
+def spoken_priority(text: str) -> int:
+    low = text.lower()
+    if any(cue in low for cue in ("urgent", "asap", "important", "high priority", "priority high")):
+        return 2
+    return 1 if "high" in low else 0
+
+
+_RECURRENCE_CUES = (
+    (("every day", "daily"), "daily"),
+    (("every week", "weekly"), "weekly"),
+    (("every month", "monthly"), "monthly"),
+    (("every year", "yearly", "annually"), "yearly"),
+)
+
+
+def spoken_recurrence(text: str) -> str:
+    low = text.lower()
+    for cues, name in _RECURRENCE_CUES:
+        if any(cue in low for cue in cues):
+            return name
+    return "none"
 
 
 _DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -323,6 +378,29 @@ class Verbs:
     # --- verbs --------------------------------------------------------------------
 
     async def capture(self, conn: sqlite3.Connection, request: Request) -> Outcome:
+        cue = _TODO_CUE.search(request.text)
+        if cue:
+            # The cue phrase is scaffolding for the ear, not part of the task, so "todo buy
+            # milk tomorrow" becomes "buy milk tomorrow". The date words stay in: they read
+            # naturally in the list and the due date is derived from the whole utterance.
+            rest = request.text[cue.end() :].strip(" ,:")
+            outcome = await self._run(
+                conn,
+                request,
+                "todos.add",
+                {
+                    "text": rest or request.text,
+                    "due_at": spoken_due(request.text),
+                    "priority": spoken_priority(request.text),
+                    "recurrence": spoken_recurrence(request.text),
+                },
+            )
+            if not outcome.is_error:
+                return outcome
+            # Paused, out of scope, or a token issued before todos existed — whatever the
+            # reason, the words were already spoken and must not be dropped. The journal takes
+            # everything, so the fallback is silent to the user and loud in the log.
+            logger.warning("todo capture fell back to the journal: %s", outcome.output)
         return await self._run(conn, request, "journal.write", {"text": request.text})
 
     async def ask(self, conn: sqlite3.Connection, request: Request) -> Outcome:

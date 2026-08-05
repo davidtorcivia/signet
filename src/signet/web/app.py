@@ -202,6 +202,16 @@ async def dashboard(request: Request) -> Response:
             "busiest": busiest,
             "latency": latency,
         }
+        try:
+            todo_counts = db.count_todos(conn)
+            todo_overdue = len(db.overdue_todos(conn))
+        except Exception:
+            todo_counts = {"open": 0, "done": 0, "deleted": 0, "total": 0}
+            todo_overdue = 0
+        stats["todos_open"] = todo_counts["open"]
+        stats["todos_done"] = todo_counts["done"]
+        stats["todos_overdue"] = todo_overdue
+        stats["todos_total"] = todo_counts["total"]
         tokens = list(conn.execute("SELECT * FROM tokens ORDER BY created_at"))
     finally:
         conn.close()
@@ -333,6 +343,275 @@ async def purge_journal(request: Request) -> Response:
     finally:
         conn.close()
     return RedirectResponse("/app/journal?show=deleted", status_code=303)
+
+
+# --- todos --------------------------------------------------------------------
+
+
+def _parse_due_input(raw: str) -> str | None:
+    """Parse HTML date/datetime-local into ISO Z. Empty means clear."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    # datetime-local gives 2026-08-06T14:30 and date gives 2026-08-06. A space separator turns
+    # up when the value arrived from an MCP client rather than the form, so accept that too and
+    # normalise here — this is the only place a due date is parsed.
+    candidate = raw.replace(" ", "T", 1) if "T" not in raw and " " in raw else raw
+    try:
+        if "T" in candidate:
+            dt = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            # Treat naive as local time -> UTC (store as UTC Z)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        # Date only -> due at 09:00 UTC (avoids midnight edge)
+        dt = datetime.fromisoformat(candidate + "T09:00:00").replace(tzinfo=UTC)
+        return dt.isoformat().replace("+00:00", "Z")
+    except ValueError:
+        return None
+
+
+def _todo_due_label(due_at: str | None) -> tuple[str, str]:
+    """Return (label, tone) for template: tone is ''|'overdue'|'today'|'soon'."""
+    if not due_at:
+        return "", ""
+    try:
+        dt = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+    except ValueError:
+        return due_at[:10], ""
+    days = (dt.date() - datetime.now(UTC).date()).days
+    # 09:00 is what a todo with no stated time is given, so read it back as no time at all.
+    timed = (dt.hour, dt.minute) != (9, 0)
+    if days < 0:
+        # Only a past date is overdue. Something due earlier today is still today's work.
+        return dt.strftime("%b %d"), "overdue"
+    if days == 0:
+        return (dt.strftime("%H:%M today") if timed else "today"), "today"
+    if days == 1:
+        return (f"tomorrow {dt.strftime('%H:%M')}" if timed else "tomorrow"), "soon"
+    if days <= 7:
+        return dt.strftime("%a %b %d"), "soon"
+    return dt.strftime("%b %d, %Y"), ""
+
+
+def _back_to_todos(request: Request) -> str:
+    params = []
+    q = request.query_params.get("q")
+    f = request.query_params.get("filter")
+    show = request.query_params.get("show")
+    if q:
+        params.append(f"q={q}")
+    if f:
+        params.append(f"filter={f}")
+    if show:
+        params.append(f"show={show}")
+    qs = ("?" + "&".join(params)) if params else ""
+    return request.headers.get("referer") or f"/app/todos{qs}"
+
+
+async def todos_page(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    q = (request.query_params.get("q") or "").strip()
+    filt = (request.query_params.get("filter") or "open").strip()
+    show = request.query_params.get("show")  # deleted
+    conn = _conn(request)
+    try:
+        if show == "deleted":
+            # Show soft-deleted
+            rows = list(
+                conn.execute(
+                    "SELECT * FROM todos WHERE deleted_at IS NOT NULL "
+                    "ORDER BY deleted_at DESC LIMIT 100"
+                )
+            )
+            counts = db.count_todos(conn)
+            overdue = []
+        else:
+            # Normal views
+            if q:
+                # Search respects filter unless filter is all
+                status_filter = filt if filt in ("open", "done") else None
+                rows = db.list_todos(conn, status=status_filter, query=q, limit=100)
+            else:
+                if filt == "done":
+                    rows = db.list_todos(conn, status="done", limit=100)
+                elif filt == "all":
+                    rows = db.list_todos(conn, status=None, limit=100)
+                elif filt == "overdue":
+                    rows = db.overdue_todos(conn)
+                else:  # open default
+                    rows = db.list_todos(conn, status="open", limit=100)
+                    filt = "open"
+            try:
+                counts = db.count_todos(conn)
+            except Exception:
+                counts = {"open": 0, "done": 0, "deleted": 0, "total": 0}
+            try:
+                overdue = db.overdue_todos(conn)
+            except Exception:
+                overdue = []
+            # Enrich due labels for template performance (avoid per-row parsing in Jinja)
+            # Attach _due_label and _tone as extra keys via dict copy; rows are sqlite3.Row
+    finally:
+        conn.close()
+
+    # Convert rows to dicts with enriched fields for template
+    enriched = []
+    for r in rows:
+        d = dict(r)
+        label, tone = _todo_due_label(d.get("due_at"))
+        d["_due_label"] = label
+        d["_due_tone"] = tone
+        # priority label
+        pri = d.get("priority", 0)
+        d["_pri_label"] = {0: "", 1: "high", 2: "urgent"}.get(pri, "")
+        d["_pri_tone"] = {0: "", 1: "high", 2: "urgent"}.get(pri, "")
+        enriched.append(d)
+
+    return _render(
+        request,
+        "todos.html",
+        page="todos",
+        todos=enriched,
+        q=q,
+        filter=filt,
+        show_deleted=(show == "deleted"),
+        counts=counts,
+        overdue_count=len(overdue),
+        undo_id=request.session.pop("undo_todo_id", None),
+    )
+
+
+async def create_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    text = str(form.get("text") or "").strip()
+    if not text:
+        return RedirectResponse("/app/todos", status_code=303)
+    due_raw = str(form.get("due_at") or "")
+    # An unparseable date is dropped rather than rejected: the todo itself still gets saved.
+    due_at = _parse_due_input(due_raw)
+    try:
+        priority = int(str(form.get("priority") or "0"))
+    except ValueError:
+        priority = 0
+    priority = max(0, min(2, priority))
+    recurrence = str(form.get("recurrence") or "none").strip().lower()
+    if recurrence not in db.VALID_RECURRENCE:
+        recurrence = "none"
+    conn = _conn(request)
+    try:
+        db.add_todo(conn, text, due_at=due_at, priority=priority, recurrence=recurrence)
+    except ValueError:
+        # Invalid priority/recurrence already clamped; text empty already handled
+        pass
+    finally:
+        conn.close()
+    # Preserve filter/q if coming from filtered view
+    return RedirectResponse(_back_to_todos(request), status_code=303)
+
+
+async def toggle_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.toggle_todo(conn, request.path_params["todo_id"])
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_todos(request), status_code=303)
+
+
+async def edit_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    form = await request.form()
+    todo_id = request.path_params["todo_id"]
+    text = form.get("text")
+    due_raw = form.get("due_at")
+    priority_raw = form.get("priority")
+    recurrence_raw = form.get("recurrence")
+    # Normalise
+    due_at = None
+    due_provided = False
+    if due_raw is not None:
+        due_provided = True
+        raw = str(due_raw).strip()
+        if raw == "":
+            due_at = ""  # clear
+        else:
+            parsed = _parse_due_input(raw)
+            # If raw looks like ISO and parse failed, try raw directly
+            if parsed is None:
+                try:
+                    datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    parsed = raw
+                except ValueError:
+                    parsed = None
+                    due_provided = False  # ignore invalid date rather than clearing
+            due_at = parsed if parsed is not None else ""
+            if due_at is None:
+                due_provided = False
+    priority = None
+    if priority_raw is not None and str(priority_raw).strip() != "":
+        try:
+            priority = max(0, min(2, int(str(priority_raw))))
+        except ValueError:
+            priority = None
+    recurrence = None
+    if recurrence_raw is not None:
+        r = str(recurrence_raw).strip().lower()
+        if r in db.VALID_RECURRENCE:
+            recurrence = r
+    conn = _conn(request)
+    try:
+        db.update_todo(
+            conn,
+            todo_id,
+            text=str(text) if text is not None else None,
+            due_at=due_at if due_provided else None,  # type: ignore[arg-type]
+            priority=priority,
+            recurrence=recurrence,
+        )
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_todos(request), status_code=303)
+
+
+async def delete_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        if db.delete_todo(conn, request.path_params["todo_id"]):
+            request.session["undo_todo_id"] = request.path_params["todo_id"]
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_todos(request), status_code=303)
+
+
+async def restore_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.restore_todo(conn, request.path_params["todo_id"])
+    finally:
+        conn.close()
+    return RedirectResponse(_back_to_todos(request), status_code=303)
+
+
+async def purge_todo(request: Request) -> Response:
+    if not _authed(request):
+        return RedirectResponse("/app/login", status_code=303)
+    conn = _conn(request)
+    try:
+        db.purge_todo(conn, request.path_params["todo_id"])
+    finally:
+        conn.close()
+    return RedirectResponse("/app/todos?show=deleted", status_code=303)
 
 
 async def tokens(request: Request) -> Response:
@@ -1004,6 +1283,13 @@ def build(cfg: Config) -> Starlette | None:
         Route("/journal/{entry_id}/delete", delete_journal, methods=["POST"]),
         Route("/journal/{entry_id}/restore", restore_journal, methods=["POST"]),
         Route("/journal/{entry_id}/purge", purge_journal, methods=["POST"]),
+        Route("/todos", todos_page, methods=["GET"]),
+        Route("/todos", create_todo, methods=["POST"]),
+        Route("/todos/{todo_id}/toggle", toggle_todo, methods=["POST"]),
+        Route("/todos/{todo_id}/edit", edit_todo, methods=["POST"]),
+        Route("/todos/{todo_id}/delete", delete_todo, methods=["POST"]),
+        Route("/todos/{todo_id}/restore", restore_todo, methods=["POST"]),
+        Route("/todos/{todo_id}/purge", purge_todo, methods=["POST"]),
         Route("/tokens", tokens, methods=["GET"]),
         Route("/tokens", create_token, methods=["POST"]),
         Route("/tokens/{token_id:int}/revoke", revoke_token, methods=["POST"]),

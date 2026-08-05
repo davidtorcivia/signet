@@ -72,6 +72,26 @@ DEFAULT_RULES: list[dict[str, Any]] = [
         "capability": "search.web",
         "args": {"query": "{rest}"},
     },
+    # Todos: generous before journal.write fallback, so actionable speech becomes a todo
+    # rather than a flat note. "todo", "to do", "remind me" are the spoken cues.
+    {
+        "match": "regex",
+        "pattern": (
+            r"^\s*(todo|to do|to-do|remind me to|remind me|add (a )?todo"
+            r"|add to (my )?(todos?|list))\b[:,]?\s*(to\s+)?(?P<rest>.+)"
+        ),
+        "capability": "todos.add",
+        "args": {"text": "{rest}"},
+    },
+    {
+        "match": "regex",
+        "pattern": (
+            r"\b(what('| i)s on my (todo|to do) list|list my todos?|show my todos?"
+            r"|my todos?)\b.*"
+        ),
+        "capability": "todos.list",
+        "args": {},
+    },
 ]
 
 CLASSIFY_SYSTEM = (

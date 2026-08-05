@@ -8,6 +8,7 @@ when the model is missing, the budget is spent, or the feature is not built yet.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,19 @@ def ring_request(text: str) -> Request:
     )
 
 
+def todo_request(text: str) -> Request:
+    """A ring whose token was issued after todos shipped, so it carries the newer scopes."""
+    return Request(
+        text=text,
+        source="mcp:ring",
+        client=Principal(
+            client_id="ring",
+            scopes=RING_SCOPES | {"todos:read", "todos:write"},
+            token_id=1,
+        ),
+    )
+
+
 async def test_capture_saves_and_confirms(cfg, conn):
     verbs = build(cfg, LLM(api_key=None))
     outcome = await verbs.call(conn, "capture", ring_request("buy fixer"))
@@ -92,6 +106,41 @@ async def test_capture_needs_no_model(cfg, conn):
     outcome = await verbs.call(conn, "capture", ring_request("note"))
     assert not outcome.is_error
     assert llm.calls == 0
+
+
+async def test_capture_of_a_spoken_cue_becomes_a_todo(cfg, conn):
+    """ "todo buy milk" is a task, not a note, and it must not need the model to become one."""
+    llm = FakeLLM(fail=True)
+    verbs = build(cfg, llm)
+    outcome = await verbs.call(conn, "capture", todo_request("todo buy milk tomorrow"))
+
+    assert not outcome.is_error
+    assert llm.calls == 0
+    row = conn.execute("SELECT text, due_at, status FROM todos").fetchone()
+    assert row["text"] == "buy milk tomorrow"  # the cue is scaffolding, the date reads naturally
+    assert row["due_at"].startswith((datetime.now(UTC).date() + timedelta(days=1)).isoformat())
+    assert row["status"] == "open"
+    assert conn.execute("SELECT count(*) c FROM journal").fetchone()["c"] == 0
+
+
+async def test_capture_without_a_cue_is_still_a_note(cfg, conn):
+    verbs = build(cfg, LLM(api_key=None))
+    await verbs.call(conn, "capture", todo_request("the enlarger bulb blew"))
+
+    assert conn.execute("SELECT count(*) c FROM todos").fetchone()["c"] == 0
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == [
+        "the enlarger bulb blew"
+    ]
+
+
+async def test_capture_falls_back_to_the_journal_when_the_todo_is_refused(cfg, conn):
+    """A ring token issued before todos existed has no todos:write. The words still survive."""
+    verbs = build(cfg, LLM(api_key=None))
+    outcome = await verbs.call(conn, "capture", ring_request("todo buy milk"))
+
+    assert not outcome.is_error
+    assert conn.execute("SELECT count(*) c FROM todos").fetchone()["c"] == 0
+    assert [r["text"] for r in conn.execute("SELECT text FROM journal")] == ["todo buy milk"]
 
 
 async def test_every_request_is_recorded_for_the_feed(cfg, conn):

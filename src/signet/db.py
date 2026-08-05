@@ -143,6 +143,8 @@ DEFAULT_RING_SCOPES = [
     "search:read",
     "calendar:read",
     "calendar:write",
+    "todos:read",
+    "todos:write",
 ]
 
 
@@ -615,3 +617,302 @@ def finish_job(conn: sqlite3.Connection, job_id: str, status: str, result: Any =
             "UPDATE jobs SET status = ?, result_json = ? WHERE id = ?",
             (status, json.dumps(result) if result is not None else None, job_id),
         )
+
+
+# --- todos --------------------------------------------------------------------------
+#
+# A todo is a promise, not a note. Separate table so open/done/due/priority can be
+# queried without scanning journal text. Soft-delete mirrors journal.
+
+VALID_RECURRENCE = frozenset({"none", "daily", "weekly", "monthly", "yearly"})
+
+
+def _todo_next_due(current: str | None, recurrence: str) -> str | None:
+    """Compute next due date for a recurring todo."""
+    if not current or recurrence == "none":
+        return None
+    try:
+        # Accept ISO date or datetime
+        dt = datetime.fromisoformat(current.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if recurrence == "daily":
+        nxt = dt + timedelta(days=1)
+    elif recurrence == "weekly":
+        nxt = dt + timedelta(weeks=1)
+    elif recurrence == "monthly":
+        # Calendar month: advance month, clamp day
+        year, month = dt.year, dt.month + 1
+        if month > 12:
+            year += 1
+            month = 1
+        import calendar as _cal
+
+        day = min(dt.day, _cal.monthrange(year, month)[1])
+        nxt = dt.replace(year=year, month=month, day=day)
+    elif recurrence == "yearly":
+        try:
+            nxt = dt.replace(year=dt.year + 1)
+        except ValueError:
+            # Feb 29 -> Feb 28
+            nxt = dt.replace(year=dt.year + 1, day=28)
+    else:
+        return None
+    return nxt.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def add_todo(
+    conn: sqlite3.Connection,
+    text: str,
+    *,
+    request_id: str | None = None,
+    due_at: str | None = None,
+    priority: int = 0,
+    recurrence: str = "none",
+) -> str:
+    text = text.strip()
+    if not text:
+        raise ValueError("todo text is required")
+    if priority not in (0, 1, 2):
+        raise ValueError("priority must be 0, 1, or 2")
+    if recurrence not in VALID_RECURRENCE:
+        raise ValueError(f"recurrence must be one of {sorted(VALID_RECURRENCE)}")
+    # Normalise due_at if provided
+    if due_at is not None:
+        due_at = due_at.strip() or None
+        if due_at:
+            # Validate ISO
+            try:
+                datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(f"due_at must be ISO-8601: {exc}") from exc
+        else:
+            due_at = None
+    todo_id = new_id()
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO todos(id, request_id, created_at, text, due_at, priority, "
+            "recurrence, status) VALUES (?,?,?,?,?,?,?, 'open')",
+            (todo_id, request_id, now_iso(), text, due_at, priority, recurrence),
+        )
+    return todo_id
+
+
+def get_todo(conn: sqlite3.Connection, todo_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+
+
+def list_todos(
+    conn: sqlite3.Connection,
+    *,
+    status: str | None = None,
+    include_deleted: bool = False,
+    include_done: bool = True,
+    limit: int = 100,
+    offset: int = 0,
+    query: str | None = None,
+) -> list[sqlite3.Row]:
+    """List todos. By default excludes soft-deleted rows, ordered open first then by due/created.
+
+    - status: 'open'|'done'|None (None means all non-deleted)
+    - query: FTS search string when provided
+    """
+    if query and query.strip():
+        expression = to_fts_query(query)
+        if expression:
+            try:
+                sql = (
+                    "SELECT t.* FROM todos_fts f JOIN todos t ON t.rowid = f.rowid "
+                    "WHERE todos_fts MATCH ? AND t.deleted_at IS NULL "
+                )
+                params: list[Any] = [expression]
+                if status in ("open", "done"):
+                    sql += "AND t.status = ? "
+                    params.append(status)
+                elif not include_done:
+                    sql += "AND t.status = 'open' "
+                sql += "ORDER BY f.rank, t.created_at DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                return list(conn.execute(sql, params))
+            except sqlite3.OperationalError:
+                pass
+        # Fallback to LIKE if FTS fails or query empty
+        like = f"%{query.strip()}%"
+        sql = "SELECT * FROM todos WHERE text LIKE ? AND deleted_at IS NULL "
+        params = [like]
+        if status in ("open", "done"):
+            sql += "AND status = ? "
+            params.append(status)
+        elif not include_done:
+            sql += "AND status = 'open' "
+        sql += "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        return list(conn.execute(sql, params))
+
+    clauses = []
+    params = []
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
+    if status in ("open", "done"):
+        clauses.append("status = ?")
+        params.append(status)
+    elif not include_done:
+        clauses.append("status = 'open'")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    # Open first, then by due date (nulls last), then newest
+    sql = (
+        f"SELECT * FROM todos{where} "
+        "ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, "
+        "CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, created_at DESC "
+        "LIMIT ? OFFSET ?"
+    )
+    params.extend([limit, offset])
+    return list(conn.execute(sql, params))
+
+
+def count_todos(conn: sqlite3.Connection) -> dict[str, int]:
+    row = conn.execute(
+        "SELECT "
+        "SUM(CASE WHEN deleted_at IS NULL AND status='open' THEN 1 ELSE 0 END) AS open_c, "
+        "SUM(CASE WHEN deleted_at IS NULL AND status='done' THEN 1 ELSE 0 END) AS done_c, "
+        "SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS deleted_c, "
+        "COUNT(*) AS total FROM todos"
+    ).fetchone()
+    return {
+        "open": int(row["open_c"] or 0),
+        "done": int(row["done_c"] or 0),
+        "deleted": int(row["deleted_c"] or 0),
+        "total": int(row["total"] or 0),
+    }
+
+
+def search_todos(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[sqlite3.Row]:
+    return list_todos(conn, query=query, limit=limit)
+
+
+def update_todo(
+    conn: sqlite3.Connection,
+    todo_id: str,
+    *,
+    text: str | None = None,
+    due_at: str | None = None,
+    priority: int | None = None,
+    recurrence: str | None = None,
+) -> bool:
+    fields: list[str] = []
+    params: list[Any] = []
+    if text is not None:
+        t = text.strip()
+        if not t:
+            return False
+        fields.append("text = ?")
+        params.append(t)
+    if due_at is not None:
+        # Empty string means clear
+        v = due_at.strip() or None
+        if v:
+            try:
+                datetime.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+        fields.append("due_at = ?")
+        params.append(v)
+    if priority is not None:
+        if priority not in (0, 1, 2):
+            return False
+        fields.append("priority = ?")
+        params.append(priority)
+    if recurrence is not None:
+        if recurrence not in VALID_RECURRENCE:
+            return False
+        fields.append("recurrence = ?")
+        params.append(recurrence)
+    if not fields:
+        return False
+    fields.append("updated_at = ?")
+    params.append(now_iso())
+    params.append(todo_id)
+    with transaction(conn):
+        cur = conn.execute(
+            f"UPDATE todos SET {', '.join(fields)} WHERE id = ? AND deleted_at IS NULL",
+            params,
+        )
+    return cur.rowcount > 0
+
+
+def toggle_todo(conn: sqlite3.Connection, todo_id: str) -> sqlite3.Row | None:
+    """Flip open<->done. For recurring todos, completing creates the next occurrence."""
+    row = get_todo(conn, todo_id)
+    if row is None or row["deleted_at"] is not None:
+        return None
+    now = now_iso()
+    if row["status"] == "open":
+        # Complete
+        with transaction(conn):
+            conn.execute(
+                "UPDATE todos SET status='done', completed_at=?, updated_at=? WHERE id=?",
+                (now, now, todo_id),
+            )
+            # Recurrence: spawn next open todo
+            rec = row["recurrence"] or "none"
+            if rec != "none":
+                nxt_due = _todo_next_due(row["due_at"], rec)
+                # If no due date but recurring, use now + interval
+                if nxt_due is None and row["due_at"] is None:
+                    base = now
+                    nxt_due = _todo_next_due(base, rec)
+                if nxt_due:
+                    new_id_val = new_id()
+                    conn.execute(
+                        "INSERT INTO todos(id, request_id, created_at, text, due_at, priority, "
+                        "recurrence, status) VALUES (?,?,?,?,?,?,?,'open')",
+                        (
+                            new_id_val,
+                            row["request_id"],
+                            now,
+                            row["text"],
+                            nxt_due,
+                            row["priority"],
+                            rec,
+                        ),
+                    )
+    else:
+        with transaction(conn):
+            conn.execute(
+                "UPDATE todos SET status='open', completed_at=NULL, updated_at=? WHERE id=?",
+                (now, todo_id),
+            )
+    return get_todo(conn, todo_id)
+
+
+def delete_todo(conn: sqlite3.Connection, todo_id: str) -> bool:
+    """Soft delete."""
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE todos SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
+            (now_iso(), todo_id),
+        )
+    return cur.rowcount > 0
+
+
+def restore_todo(conn: sqlite3.Connection, todo_id: str) -> bool:
+    with transaction(conn):
+        cur = conn.execute("UPDATE todos SET deleted_at=NULL WHERE id=?", (todo_id,))
+    return cur.rowcount > 0
+
+
+def purge_todo(conn: sqlite3.Connection, todo_id: str) -> bool:
+    """Hard delete, only if already soft-deleted."""
+    with transaction(conn):
+        cur = conn.execute("DELETE FROM todos WHERE id=? AND deleted_at IS NOT NULL", (todo_id,))
+    return cur.rowcount > 0
+
+
+def overdue_todos(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            "SELECT * FROM todos WHERE deleted_at IS NULL AND status='open' "
+            "AND due_at IS NOT NULL AND due_at < ? ORDER BY due_at ASC",
+            (now_iso(),),
+        )
+    )

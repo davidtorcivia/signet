@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}Todos{% endblock %}
+{% block content %}
+<style>
+/* Todos-specific, still Swiss. Reuses base variables, no new palette. */
+.todo-toolbar { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin:.4rem 0 1rem; }
+.todo-toolbar a { text-decoration:none; }
+.todo-toolbar .chip { display:inline-flex; align-items:center; gap:.35rem; padding:.35rem .6rem; border:1px solid var(--line); font-size:.68rem; letter-spacing:.1em; text-transform:uppercase; font-family:ui-monospace,monospace; color:var(--muted); background:var(--panel); min-height:36px; }
+.todo-toolbar .chip.on { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+.todo-toolbar .chip.overdue.on { background:var(--bad); border-color:var(--bad); color:#fff; }
+.todo-item { display:flex; gap:.8rem; align-items:flex-start; padding:.85rem 0; border-bottom:1px dotted var(--line); }
+.todo-item:last-child { border-bottom:0; }
+.todo-check { flex:none; margin-top:.15rem; }
+.todo-check button { width:1.45rem; height:1.45rem; min-height:auto; padding:0; display:grid; place-items:center; border:1px solid var(--line); background:var(--paper); color:transparent; font-size:.9rem; line-height:1; }
+.todo-check button.done { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.todo-check button:hover { border-color:var(--ink); }
+.todo-body { flex:1; min-width:0; }
+.todo-text { margin:0; font-size:.95rem; line-height:1.45; word-break:break-word; }
+.todo-text.done { text-decoration:line-through; color:var(--muted); }
+.todo-meta { display:flex; gap:.45rem; flex-wrap:wrap; align-items:center; margin-top:.35rem; }
+.pill { display:inline-flex; align-items:center; padding:.1rem .4rem; font-size:.62rem; letter-spacing:.08em; text-transform:uppercase; border:1px solid var(--line); font-family:ui-monospace,monospace; color:var(--muted); }
+.pill.overdue { color:var(--bad); border-color:var(--bad); background:color-mix(in srgb, var(--bad) 8%, transparent); }
+.pill.today { color:var(--ink); border-color:var(--ink); }
+.pill.soon { color:var(--muted); }
+.pill.high { color:var(--bad); border-color:var(--bad); }
+.pill.urgent { background:var(--bad); border-color:var(--bad); color:#fff; }
+.pill.recur { letter-spacing:.06em; }
+.todo-actions { flex:none; display:flex; gap:.4rem; }
+@media (max-width: 640px) { .todo-item { gap:.6rem; } .todo-actions { flex-direction:column; } }
+.add-grid { display:grid; gap:.6rem; }
+@media (min-width: 560px) { .add-grid { grid-template-columns: 1fr auto auto auto; align-items:end; } .add-grid .span-all { grid-column: 1 / -1; } }
+</style>
+
+<div class="pagehead">
+  <h1 class="title">{{ 'Deleted todos' if show_deleted else 'Todos' }}</h1>
+  <span class="spacer"></span>
+  <span class="label">{{ counts.open }} open{% if counts.done %} &middot; {{ counts.done }} done{% endif %}{% if overdue_count %} &middot; {{ overdue_count }} overdue{% endif %}</span>
+</div>
+
+{% if undo_id %}
+  <div class="notice accent">
+    <div class="row between">
+      <span>Deleted. Out of search, not gone.</span>
+      <form method="post" action="/app/todos/{{ undo_id }}/restore">
+        <button class="tiny">Undo</button>
+      </form>
+    </div>
+  </div>
+{% endif %}
+
+{% if show_deleted %}
+  <div class="notice">
+    <div class="row between">
+      <span class="muted">Hidden from your list and search.</span>
+      <a href="/app/todos" class="label">Back to todos &rarr;</a>
+    </div>
+  </div>
+{% else %}
+  {# Add form — single row on desktop, stacked on phone #}
+  <form method="post" action="/app/todos" class="panel" style="margin-bottom:1rem">
+    <div class="add-grid">
+      <div class="span-all">
+        <label class="label" for="todo-text">Add a todo</label>
+        <input id="todo-text" type="text" name="text" placeholder="What needs doing?" required autocomplete="off" style="margin-top:.3rem">
+        <div class="muted" style="font-size:.72rem;margin-top:.3rem">Say “todo …”, “remind me to …”, or add it here. Ring auto-creates todos.</div>
+      </div>
+      <div>
+        <label class="label" for="todo-due">Due</label>
+        <input id="todo-due" type="date" name="due_at" style="margin-top:.25rem; min-width: 9.5rem;">
+      </div>
+      <div>
+        <label class="label" for="todo-pri">Priority</label>
+        <select id="todo-pri" name="priority" style="margin-top:.25rem">
+          <option value="0">Normal</option>
+          <option value="1">High</option>
+          <option value="2">Urgent</option>
+        </select>
+      </div>
+      <div>
+        <label class="label" for="todo-recur">Repeat</label>
+        <select id="todo-recur" name="recurrence" style="margin-top:.25rem">
+          <option value="none">None</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="yearly">Yearly</option>
+        </select>
+      </div>
+      <div style="display:flex;align-items:end">
+        <button style="width:100%">Add</button>
+      </div>
+    </div>
+  </form>
+
+  <form class="inline" method="get" action="/app/todos" style="margin-bottom:.8rem">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search todos" autocomplete="off">
+    {% if filter != 'open' %}<input type="hidden" name="filter" value="{{ filter }}">{% endif %}
+    <button>Search</button>
+    {% if q %}<a href="/app/todos?filter={{ filter }}" class="label" style="align-self:center;padding:.4rem .6rem;text-decoration:none;border:1px solid var(--line)">Clear</a>{% endif %}
+  </form>
+
+  <div class="todo-toolbar" role="tablist" aria-label="Filter todos">
+    <a href="/app/todos?filter=open{% if q %}&q={{ q }}{% endif %}" class="chip {{ 'on' if filter=='open' }}">Open <span class="mono">{{ counts.open }}</span></a>
+    <a href="/app/todos?filter=overdue{% if q %}&q={{ q }}{% endif %}" class="chip {{ 'overdue on' if filter=='overdue' else '' }} {{ 'overdue' if overdue_count else '' }}">Overdue <span class="mono">{{ overdue_count }}</span></a>
+    <a href="/app/todos?filter=done{% if q %}&q={{ q }}{% endif %}" class="chip {{ 'on' if filter=='done' }}">Done <span class="mono">{{ counts.done }}</span></a>
+    <a href="/app/todos?filter=all{% if q %}&q={{ q }}{% endif %}" class="chip {{ 'on' if filter=='all' }}">All <span class="mono">{{ counts.total }}</span></a>
+  </div>
+{% endif %}
+
+<div class="panel">
+  {% if not todos %}
+    <div class="empty">
+      {% if show_deleted %}Nothing deleted.
+      {% elif q %}Nothing matches “{{ q }}”.
+      {% elif filter=='done' %}No done todos yet.
+      {% elif filter=='overdue' %}Nothing overdue. You're clear.
+      {% elif filter=='open' %}No open todos. Add one above or press the ring and say “todo …”.
+      {% else %}No todos yet.{% endif %}
+    </div>
+  {% endif %}
+
+  {% for t in todos %}
+    <div class="todo-item">
+      <form method="post" action="/app/todos/{{ t.id }}/toggle" class="todo-check">
+        <button class="{{ 'done' if t.status=='done' }}" title="{{ 'Mark open' if t.status=='done' else 'Mark done' }}" aria-label="{{ 'Mark open' if t.status=='done' else 'Mark done' }}">
+          {{ '✓' if t.status=='done' else '' }}
+        </button>
+      </form>
+
+      <div class="todo-body">
+        <p class="todo-text {{ 'done' if t.status=='done' }}">{{ t.text }}</p>
+        <div class="todo-meta">
+          {% if t._due_label %}
+            <span class="pill {{ t._due_tone }}">{{ t._due_label }}</span>
+          {% endif %}
+          {% if t._pri_label %}
+            <span class="pill {{ t._pri_tone }}">{{ t._pri_label }}</span>
+          {% endif %}
+          {% if t.recurrence != 'none' %}
+            <span class="pill recur">↻ {{ t.recurrence }}</span>
+          {% endif %}
+          <span class="muted mono" style="font-size:.68rem">{{ t.created_at[:10] }}</span>
+        </div>
+
+        {% if not show_deleted %}
+        <details style="margin-top:.45rem">
+          <summary class="label" style="cursor:pointer;min-height:28px">Edit</summary>
+          <form method="post" action="/app/todos/{{ t.id }}/edit" style="margin-top:.5rem" class="add-grid">
+            <div class="span-all">
+              <input type="text" name="text" value="{{ t.text }}" required>
+            </div>
+            <div>
+              <label class="label">Due</label>
+              {# show ISO date for editing; browser date input expects YYYY-MM-DD #}
+              <input type="date" name="due_at" value="{{ t.due_at[:10] if t.due_at else '' }}" style="margin-top:.25rem">
+            </div>
+            <div>
+              <label class="label">Priority</label>
+              <select name="priority" style="margin-top:.25rem">
+                <option value="0" {{ 'selected' if t.priority==0 }}>Normal</option>
+                <option value="1" {{ 'selected' if t.priority==1 }}>High</option>
+                <option value="2" {{ 'selected' if t.priority==2 }}>Urgent</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Repeat</label>
+              <select name="recurrence" style="margin-top:.25rem">
+                <option value="none" {{ 'selected' if t.recurrence=='none' }}>None</option>
+                <option value="daily" {{ 'selected' if t.recurrence=='daily' }}>Daily</option>
+                <option value="weekly" {{ 'selected' if t.recurrence=='weekly' }}>Weekly</option>
+                <option value="monthly" {{ 'selected' if t.recurrence=='monthly' }}>Monthly</option>
+                <option value="yearly" {{ 'selected' if t.recurrence=='yearly' }}>Yearly</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:end">
+              <button class="tiny" style="width:100%">Save</button>
+            </div>
+          </form>
+          <form method="post" action="/app/todos/{{ t.id }}/delete" style="margin-top:.5rem">
+            <button class="quiet tiny">Delete</button>
+          </form>
+        </details>
+        {% else %}
+        <div class="row" style="margin-top:.5rem">
+          <form method="post" action="/app/todos/{{ t.id }}/restore">
+            <button class="quiet tiny">Restore</button>
+          </form>
+          <form method="post" action="/app/todos/{{ t.id }}/purge">
+            <button class="danger tiny">Delete for good</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+{% if not show_deleted and counts.deleted %}
+  <div class="row" style="margin-top:.9rem">
+    <a href="/app/todos?show=deleted" class="label">
+      {{ counts.deleted }} deleted todo{{ '' if counts.deleted==1 else 's' }} &rarr;
+    </a>
+  </div>
+{% endif %}
+
+{% if not show_deleted and todos|length == 100 %}
+  <div class="muted mono" style="font-size:.72rem;margin-top:.6rem;text-align:center">Showing 100 — refine search or filter to see more.</div>
+{% endif %}
+{% endblock %}

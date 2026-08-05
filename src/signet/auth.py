@@ -83,6 +83,8 @@ ALL_SCOPES = (
     "search:read",
     "calendar:read",
     "calendar:write",
+    "todos:read",
+    "todos:write",
     "home:control",
     "media:control",
     "admin",
