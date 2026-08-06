@@ -55,3 +55,51 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Weather, as an upstream MCP server rather than a capability written here.
+  #
+  # It earns its place on cost rather than novelty: "what's it doing tomorrow" otherwise falls
+  # through to an Exa search at ~$0.007, or worse, gets answered from training data. Open-Meteo
+  # is free and needs no account, so the only key involved is the one below, which guards this
+  # container rather than anything upstream.
+  #
+  # Pinned to an exact version. `latest` in a committed compose file means a deploy six months
+  # from now is a different program with the same name.
+  openmeteo:
+    image: ghcr.io/cmer81/open-meteo-mcp:2.0.1
+    container_name: signet-openmeteo
+    restart: unless-stopped
+    environment:
+      # The image already sets TRANSPORT=http, HOST=0.0.0.0 and PORT=3000.
+      #
+      # Empty means the server accepts anything, which is why nothing is published below: on the
+      # project's private network only signet can reach it. Set it in .env anyway — signet sends
+      # it as the upstream's auth header, so a real value keeps the credential path identical to
+      # every other upstream instead of leaving one server as the special case that skips it.
+      API_KEY: ${OPENMETEO_API_KEY:-}
+    # Deliberately no `ports:`. signet reaches it at http://openmeteo:3000/mcp over the compose
+    # project's default network; the host and the LAN cannot reach it at all.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # /health is exempt from both auth and rate limiting, so this stays honest when API_KEY
+      # is set. Node 22 has fetch built in, so this needs nothing added to the image.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
