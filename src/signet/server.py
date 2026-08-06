@@ -54,7 +54,17 @@ def build_mcp_server(cfg: Config, verbs: Verbs) -> Server:
                 is_error=True,
             )
 
-        logger.info("tools/call %s <- %r", params.name, text[:80])
+        # Everything except the one argument the verb declares is dropped on the line above.
+        # That is the right default, but it is silent, so a client sending something useful —
+        # the phone knows where it is, and signet currently has to ask — looks identical to a
+        # client sending nothing. Naming the extras costs one log line and settles it.
+        extras = {k: v for k, v in arguments.items() if k != ARG_NAMES.get(params.name, "text")}
+        logger.info(
+            "tools/call %s <- %r%s",
+            params.name,
+            text[:80],
+            f" +unused args {extras}" if extras else "",
+        )
         request = Request(text=text, source="mcp:ring", client=principal, verb=params.name)
         conn = db.connect(cfg.db_path)
         try:
