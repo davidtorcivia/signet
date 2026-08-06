@@ -167,12 +167,17 @@ async def run(
         decision = completion.data or {}
         answer = decision.get("answer")
         tool = decision.get("tool")
+        chosen = registry.get(str(tool)) if tool else None
 
-        if answer and not tool:
+        # An answer counts whenever it is not accompanied by a tool this registry actually has.
+        # Asked to stop, a model usually writes {"answer": "..."}, and sometimes writes
+        # {"tool": "answer", "answer": "..."}; both plainly mean the same thing. Reading only
+        # the first threw away a finished answer and reported a hallucinated tool, which is a
+        # bad trade on a watch that is waiting.
+        if answer and chosen is None:
             trace.stopped_because = "answered"
             return _answer(str(answer), trace), trace
 
-        chosen = registry.get(str(tool)) if tool else None
         if chosen is None:
             # A hallucinated tool is not worth another round trip on a watch's patience.
             logger.info("agent picked no usable tool: %r", tool)
@@ -196,7 +201,16 @@ async def run(
             is_error=outcome.is_error,
         )
         trace.steps.append(step)
-        transcript.append(f"You used {tool}. Result: {outcome.output[:600]}")
+        # The whole result, uncut. This was 600 characters, which was fine for tools that
+        # answer in a sentence and quietly broke every tool that answers with a series: an
+        # hourly forecast spends its first 400 characters on units and metadata, so "when is
+        # it going to rain" reached the model as a list of timestamps with the precipitation
+        # values sliced off. It could then only guess, and did, confidently.
+        #
+        # A model that is given the data and asked to find the answer in it is doing the thing
+        # it is good at. Cutting the data to a length chosen here means guessing in advance
+        # which part of the answer mattered, which is a worse bet than trusting it to read.
+        transcript.append(f"You used {tool}. Result: {outcome.output}")
 
         if outcome.untrusted:
             # Narrow the loop for the rest of the run, and keep it narrowed.
@@ -209,7 +223,7 @@ async def run(
 
     if trace.steps:
         last = trace.steps[-1]
-        summary = last.output.strip().splitlines()[0] if last.output.strip() else "Done."
+        summary = _readable(last.output)
         return _answer(summary, trace), trace
 
     message = "I could not work out how to do that."
@@ -221,6 +235,20 @@ async def run(
         ),
         trace,
     )
+
+
+def _readable(output: str) -> str:
+    """The last tool's own words, when the loop stopped before anyone summarised them.
+
+    A capability that replies "Saved." has already said the useful thing, so passing it
+    through beats inventing something. A capability that replies with a document has not:
+    taking its first line put a lone "{" on the watch face, which reads as a failure and is
+    one. Machine output is better admitted than paraphrased by a slice.
+    """
+    line = next((ln.strip() for ln in output.splitlines() if ln.strip()), "")
+    if not line or line[0] in "{[":
+        return "I found the information but could not sum it up."
+    return line
 
 
 def _answer(text: str, trace: Trace) -> Outcome:

@@ -261,3 +261,63 @@ async def test_the_trace_is_readable_afterwards(conn):
     assert steps[0]["tool"] == "journal.search"
     assert steps[0]["why"] == "look it up"
     assert steps[0]["ok"] is True
+
+
+async def test_an_answer_counts_even_when_labelled_as_a_tool(conn):
+    """Models asked to stop write {"answer": ...}, and sometimes {"tool": "answer", ...}.
+
+    Reading only the first shape threw a finished answer away and reported a hallucinated
+    tool, which is the worst outcome available: the work was done and the watch was told it
+    was not.
+    """
+    registry = Registry()
+    registry.register(cap("a.one", ok))
+
+    llm = ScriptedLLM(
+        {"tool": "a.one", "args": {"text": "look"}, "why": "check"},
+        {"tool": "answer", "answer": "It rains at 8pm."},
+    )
+    outcome, trace = await agent.run(conn, registry, llm, caller("journal:read"))
+
+    assert coreschema.headline(outcome.semantic) == "It rains at 8pm."
+    assert trace.stopped_because == "answered"
+    assert not outcome.is_error
+
+
+async def test_a_raw_payload_is_never_the_answer(conn):
+    """The loop's fallback is the last tool's own words, which only helps when they are words.
+
+    A capability that replies with a JSON document used to put a lone "{" on the watch face.
+    """
+
+    async def document(request, args):
+        return Outcome(
+            output='{\n  "latitude": 40.65,\n  "hourly": {"precipitation": [0, 0, 1]}\n}',
+            semantic=coreschema.response("ok"),
+        )
+
+    registry = Registry()
+    registry.register(cap("weather.forecast", document))
+
+    # Never answers, so the loop runs out of steps and must summarise for itself.
+    llm = ScriptedLLM(*[{"tool": "weather.forecast", "args": {"text": "x"}} for _ in range(5)])
+    outcome, _ = await agent.run(conn, registry, llm, caller("journal:read"), max_steps=2)
+
+    headline = coreschema.headline(outcome.semantic)
+    assert not headline.startswith("{"), f"raw payload reached the watch: {headline!r}"
+    assert headline == "I found the information but could not sum it up."
+
+
+async def test_a_plain_spoken_result_still_passes_through(conn):
+    """The fallback should not flatten a capability that already said the useful thing."""
+
+    async def saved(request, args):
+        return Outcome(output="Saved.", semantic=coreschema.response("ok"))
+
+    registry = Registry()
+    registry.register(cap("journal.write", saved))
+
+    llm = ScriptedLLM(*[{"tool": "journal.write", "args": {"text": "x"}} for _ in range(5)])
+    outcome, _ = await agent.run(conn, registry, llm, caller("journal:read"), max_steps=2)
+
+    assert coreschema.headline(outcome.semantic) == "Saved."
